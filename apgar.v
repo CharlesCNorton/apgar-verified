@@ -1266,6 +1266,64 @@ Proof.
     repeat split; try reflexivity. discriminate.
 Qed.
 
+Definition assessments_with_score (n : nat) : list t :=
+  filter (fun a => total_unbounded a =? n) all.
+
+Definition count_assessments_with_score (n : nat) : nat :=
+  length (assessments_with_score n).
+
+Lemma assessments_with_score_correct : forall n a,
+  In a (assessments_with_score n) <-> In a all /\ total_unbounded a = n.
+Proof.
+  intros n a. unfold assessments_with_score.
+  rewrite filter_In. rewrite Nat.eqb_eq. tauto.
+Qed.
+
+Lemma assessments_with_score_nodup : forall n,
+  NoDup (assessments_with_score n).
+Proof.
+  intros n. unfold assessments_with_score.
+  apply NoDup_filter. exact all_nodup.
+Qed.
+
+Lemma score_extremes_unique_principle : forall n witness,
+  (forall a, total_unbounded a = n -> a = witness) ->
+  total_unbounded witness = n ->
+  count_assessments_with_score n = 1.
+Proof.
+  intros n witness Huniq Hwit.
+  unfold count_assessments_with_score, assessments_with_score.
+  remember (filter (fun a => total_unbounded a =? n) all) as L eqn:HL.
+  assert (Hin: In witness L).
+  { rewrite HL. apply filter_In. split. apply all_complete. apply Nat.eqb_eq. exact Hwit. }
+  assert (Hall: forall a, In a L -> a = witness).
+  { intros a Ha. rewrite HL in Ha. apply filter_In in Ha. destruct Ha as [_ Heq].
+    apply Nat.eqb_eq in Heq. apply Huniq. exact Heq. }
+  assert (Hnd: NoDup L).
+  { rewrite HL. apply NoDup_filter. exact all_nodup. }
+  destruct L as [|x [|y rest]].
+  - exfalso. exact Hin.
+  - reflexivity.
+  - exfalso.
+    assert (Hx: x = witness) by (apply Hall; left; reflexivity).
+    assert (Hy: y = witness) by (apply Hall; right; left; reflexivity).
+    subst. inversion Hnd. apply H1. left. reflexivity.
+Qed.
+
+Lemma score_0_unique_count : count_assessments_with_score 0 = 1.
+Proof.
+  apply (score_extremes_unique_principle 0 minimum).
+  - exact score_0_unique.
+  - reflexivity.
+Qed.
+
+Lemma score_10_unique_count : count_assessments_with_score 10 = 1.
+Proof.
+  apply (score_extremes_unique_principle 10 maximum).
+  - exact score_10_unique.
+  - reflexivity.
+Qed.
+
 End Assessment.
 
 (******************************************************************************)
@@ -1854,6 +1912,65 @@ Proof.
   apply Nat.leb_gt in E. lia.
 Qed.
 
+Theorem routine_iff : forall s, of_score s = RoutineCare <-> 7 <= s.
+Proof.
+  intros s. split.
+  - exact (of_score_routine_inv s).
+  - exact (of_score_routine s).
+Qed.
+
+Lemma of_score_stim_inv : forall s, of_score s = StimulationOxygen -> 4 <= s <= 6.
+Proof.
+  intros s H. unfold of_score in H.
+  destruct (7 <=? s) eqn:E1; [discriminate H|].
+  destruct (4 <=? s) eqn:E2.
+  - apply Nat.leb_gt in E1. apply Nat.leb_le in E2. lia.
+  - destruct (1 <=? s) eqn:E3; discriminate H.
+Qed.
+
+Lemma of_score_stim : forall s, 4 <= s <= 6 -> of_score s = StimulationOxygen.
+Proof.
+  intros s [H1 H2]. unfold of_score.
+  destruct (7 <=? s) eqn:E1.
+  - apply Nat.leb_le in E1. lia.
+  - destruct (4 <=? s) eqn:E2; [reflexivity|].
+    apply Nat.leb_gt in E2. lia.
+Qed.
+
+Theorem stim_iff : forall s, of_score s = StimulationOxygen <-> 4 <= s <= 6.
+Proof.
+  intros s. split.
+  - exact (of_score_stim_inv s).
+  - exact (of_score_stim s).
+Qed.
+
+Lemma of_score_ppv_inv : forall s, of_score s = PositivePressureVentilation -> 1 <= s <= 3.
+Proof.
+  intros s H. unfold of_score in H.
+  destruct (7 <=? s) eqn:E1; [discriminate|].
+  destruct (4 <=? s) eqn:E2; [discriminate|].
+  destruct (1 <=? s) eqn:E3; [|discriminate].
+  apply Nat.leb_gt in E1. apply Nat.leb_gt in E2. apply Nat.leb_le in E3. lia.
+Qed.
+
+Lemma of_score_ppv : forall s, 1 <= s <= 3 -> of_score s = PositivePressureVentilation.
+Proof.
+  intros s [H1 H2]. unfold of_score.
+  destruct (7 <=? s) eqn:E1.
+  - apply Nat.leb_le in E1. lia.
+  - destruct (4 <=? s) eqn:E2.
+    + apply Nat.leb_le in E2. lia.
+    + destruct (1 <=? s) eqn:E3; [reflexivity|].
+      apply Nat.leb_gt in E3. lia.
+Qed.
+
+Theorem ppv_iff : forall s, of_score s = PositivePressureVentilation <-> 1 <= s <= 3.
+Proof.
+  intros s. split.
+  - exact (of_score_ppv_inv s).
+  - exact (of_score_ppv s).
+Qed.
+
 Theorem intervention_monotonic : forall s1 s2 : nat,
   s1 <= s2 -> s2 <= 10 ->
   of_score s1 = RoutineCare -> of_score s2 = RoutineCare.
@@ -2021,6 +2138,62 @@ Proof.
   - right. left. split; assumption.
   - right. right. left. split; assumption.
   - right. right. right. split; assumption.
+Qed.
+
+Theorem intervention_pairwise_disjoint : forall s i1 i2,
+  of_score s = i1 -> of_score s = i2 -> i1 = i2.
+Proof.
+  intros s i1 i2 H1 H2. rewrite <- H1, <- H2. reflexivity.
+Qed.
+
+Theorem intervention_partition_exclusive : forall s,
+  of_score s = RoutineCare -> of_score s <> StimulationOxygen.
+Proof.
+  intros s H1 H2. rewrite H1 in H2. discriminate.
+Qed.
+
+Theorem intervention_partition_exclusive' : forall s,
+  of_score s = RoutineCare -> of_score s <> PositivePressureVentilation.
+Proof.
+  intros s H1 H2. rewrite H1 in H2. discriminate.
+Qed.
+
+Theorem intervention_partition_exclusive'' : forall s,
+  of_score s = RoutineCare -> of_score s <> FullResuscitation.
+Proof.
+  intros s H1 H2. rewrite H1 in H2. discriminate.
+Qed.
+
+Theorem intervention_covers_all : forall s,
+  s <= 10 ->
+  of_score s = RoutineCare \/
+  of_score s = StimulationOxygen \/
+  of_score s = PositivePressureVentilation \/
+  of_score s = FullResuscitation.
+Proof.
+  intros s Hs.
+  destruct (intervention_partition s Hs) as [[H _]|[[H _]|[[H _]|[H _]]]];
+  [left | right; left | right; right; left | right; right; right]; exact H.
+Qed.
+
+Theorem full_resuscitation_excludes_reassuring : forall a : Assessment.t,
+  Intervention.of_assessment a = FullResuscitation ->
+  Classification.of_assessment a = Classification.Low.
+Proof.
+  intros a H.
+  unfold Intervention.of_assessment in H.
+  apply full_iff_zero in H.
+  unfold Classification.of_assessment.
+  rewrite H. reflexivity.
+Qed.
+
+Theorem reassuring_excludes_full_resuscitation : forall a : Assessment.t,
+  Classification.of_assessment a = Classification.Reassuring ->
+  Intervention.of_assessment a <> FullResuscitation.
+Proof.
+  intros a H Hcontra.
+  apply full_resuscitation_excludes_reassuring in Hcontra.
+  rewrite H in Hcontra. discriminate.
 Qed.
 
 Definition of_nat (n : nat) : t :=
@@ -2366,6 +2539,73 @@ Proof.
   apply should_continue_false_if_reassuring. exact H.
 Qed.
 
+Definition example_assessment_low : Assessment.t :=
+  Assessment.mk Appearance.PaleBlue Pulse.Below100 Grimace.NoResponse
+                Activity.Flaccid Respiration.Apneic.
+
+Definition example_assessment_moderate : Assessment.t :=
+  Assessment.mk Appearance.Acrocyanotic Pulse.AtOrAbove100 Grimace.GrimaceOnly
+                Activity.SomeFlexion Respiration.WeakIrregular.
+
+Definition example_assessment_reassuring : Assessment.t :=
+  Assessment.mk Appearance.CompletelyPink Pulse.AtOrAbove100 Grimace.CryCoughSneeze
+                Activity.ActiveMotion Respiration.StrongCry.
+
+Definition example_timed_1 : TimedAssessment := mkTimed Min1 example_assessment_low.
+Definition example_timed_5 : TimedAssessment := mkTimed Min5 example_assessment_moderate.
+Definition example_timed_10 : TimedAssessment := mkTimed Min10 example_assessment_reassuring.
+
+Definition example_sequence : AssessmentSequence :=
+  [example_timed_1; example_timed_5; example_timed_10].
+
+Lemma example_sequence_nonempty : example_sequence <> [].
+Proof. discriminate. Qed.
+
+Lemma example_sequence_starts_min1 : starts_at_min1 example_sequence.
+Proof. reflexivity. Qed.
+
+Lemma example_sequence_consecutive : times_consecutive example_sequence.
+Proof. simpl. repeat split; reflexivity. Qed.
+
+Definition example_valid_sequence : ValidSequence :=
+  mkValidSeq example_sequence
+             example_sequence_nonempty
+             example_sequence_starts_min1
+             example_sequence_consecutive.
+
+Lemma example_valid_sequence_length : valid_seq_length example_valid_sequence = 3.
+Proof. reflexivity. Qed.
+
+Lemma example_scores : sequence_scores example_sequence = [1; 6; 10].
+Proof. reflexivity. Qed.
+
+Lemma example_final_reassuring :
+  Classification.of_assessment (assessment example_timed_10) = Classification.Reassuring.
+Proof. reflexivity. Qed.
+
+Lemma example_terminates_at_reassuring :
+  should_continue example_timed_10 = false.
+Proof.
+  apply reassuring_stops_sequence.
+  exact example_final_reassuring.
+Qed.
+
+Lemma example_score_low : Assessment.total_unbounded example_assessment_low = 1.
+Proof. reflexivity. Qed.
+
+Lemma example_score_moderate : Assessment.total_unbounded example_assessment_moderate = 6.
+Proof. reflexivity. Qed.
+
+Lemma example_score_reassuring : Assessment.total_unbounded example_assessment_reassuring = 10.
+Proof. reflexivity. Qed.
+
+Theorem workflow_demonstration :
+  Classification.of_score (Assessment.total_unbounded example_assessment_low) = Classification.Low /\
+  Classification.of_score (Assessment.total_unbounded example_assessment_moderate) = Classification.ModeratelyAbnormal /\
+  Classification.of_score (Assessment.total_unbounded example_assessment_reassuring) = Classification.Reassuring /\
+  should_continue example_timed_10 = false.
+Proof. repeat split; reflexivity. Qed.
+
 End Timing.
 
 (******************************************************************************)
@@ -2388,6 +2628,59 @@ Inductive RespiratorySupport : Type :=
 Definition resp_support_eq_dec : forall r1 r2 : RespiratorySupport,
   {r1 = r2} + {r1 <> r2}.
 Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition resp_support_all : list RespiratorySupport :=
+  [NoSupport; SupplementalO2; CPAP; PPV; ETT].
+
+Lemma resp_support_all_complete : forall r : RespiratorySupport, In r resp_support_all.
+Proof. intros []; simpl; auto 10. Qed.
+
+Lemma resp_support_all_nodup : NoDup resp_support_all.
+Proof. repeat constructor; simpl; intuition discriminate. Qed.
+
+Definition resp_support_severity (r : RespiratorySupport) : nat :=
+  match r with
+  | NoSupport => 0
+  | SupplementalO2 => 1
+  | CPAP => 2
+  | PPV => 3
+  | ETT => 4
+  end.
+
+Definition resp_support_le (r1 r2 : RespiratorySupport) : Prop :=
+  resp_support_severity r1 <= resp_support_severity r2.
+
+Notation "r1 <=r r2" := (resp_support_le r1 r2) (at level 70).
+
+Lemma resp_support_le_refl : forall r, r <=r r.
+Proof. intros r. unfold resp_support_le. lia. Qed.
+
+Lemma resp_support_le_trans : forall r1 r2 r3,
+  r1 <=r r2 -> r2 <=r r3 -> r1 <=r r3.
+Proof. intros r1 r2 r3 H1 H2. unfold resp_support_le in *. lia. Qed.
+
+Lemma resp_support_le_antisym : forall r1 r2,
+  r1 <=r r2 -> r2 <=r r1 -> r1 = r2.
+Proof.
+  intros [] [] H1 H2; unfold resp_support_le, resp_support_severity in *;
+  try reflexivity; lia.
+Qed.
+
+Lemma NoSupport_le_all : forall r, NoSupport <=r r.
+Proof. intros []; unfold resp_support_le, resp_support_severity; lia. Qed.
+
+Lemma all_le_ETT : forall r, r <=r ETT.
+Proof. intros []; unfold resp_support_le, resp_support_severity; lia. Qed.
+
+Definition resp_support_leb (r1 r2 : RespiratorySupport) : bool :=
+  resp_support_severity r1 <=? resp_support_severity r2.
+
+Lemma resp_support_leb_correct : forall r1 r2,
+  resp_support_leb r1 r2 = true <-> r1 <=r r2.
+Proof.
+  intros r1 r2. unfold resp_support_leb, resp_support_le.
+  rewrite Nat.leb_le. tauto.
+Qed.
 
 Record t : Type := mk {
   timed_assessment : Timing.TimedAssessment;
@@ -2562,6 +2855,63 @@ Theorem decide_discontinuation_correct : forall e,
 Proof.
   intros e. unfold decide_discontinuation.
   destruct (criteria_considered e) eqn:E; split; intro H; try reflexivity; try discriminate.
+Qed.
+
+Theorem criteria_monotonic_in_time : forall e1 e2,
+  ExpandedForm.underlying_score e1 = 0 ->
+  ExpandedForm.underlying_score e2 = 0 ->
+  Timing.to_minutes (Timing.time (ExpandedForm.timed_assessment e1)) <=
+  Timing.to_minutes (Timing.time (ExpandedForm.timed_assessment e2)) ->
+  criteria_considered e1 = true ->
+  criteria_considered e2 = true.
+Proof.
+  intros e1 e2 Hz1 Hz2 Htime H1.
+  unfold criteria_considered in *.
+  apply andb_true_iff in H1. destruct H1 as [_ Ht1].
+  apply Nat.leb_le in Ht1.
+  apply andb_true_iff. split.
+  - apply Nat.eqb_eq. exact Hz2.
+  - apply Nat.leb_le. lia.
+Qed.
+
+Theorem once_considered_stays_considered : forall e1 e2,
+  ExpandedForm.underlying_score e1 = ExpandedForm.underlying_score e2 ->
+  ExpandedForm.underlying_score e1 = 0 ->
+  Timing.to_minutes (Timing.time (ExpandedForm.timed_assessment e1)) <=
+  Timing.to_minutes (Timing.time (ExpandedForm.timed_assessment e2)) ->
+  criteria_considered e1 = true ->
+  criteria_considered e2 = true.
+Proof.
+  intros e1 e2 Hscore Hz Htime H1.
+  apply criteria_monotonic_in_time with e1; try assumption.
+  - rewrite <- Hscore. exact Hz.
+Qed.
+
+Theorem criteria_false_before_10min : forall e,
+  Timing.to_minutes (Timing.time (ExpandedForm.timed_assessment e)) < 10 ->
+  criteria_considered e = false.
+Proof.
+  intros e H. unfold criteria_considered.
+  destruct (ExpandedForm.underlying_score e =? 0) eqn:E1.
+  - destruct (10 <=? Timing.to_minutes (Timing.time (ExpandedForm.timed_assessment e))) eqn:E2.
+    + apply Nat.leb_le in E2. lia.
+    + reflexivity.
+  - reflexivity.
+Qed.
+
+Theorem criteria_iff : forall e,
+  criteria_considered e = true <->
+  (ExpandedForm.underlying_score e = 0 /\
+   Timing.to_minutes (Timing.time (ExpandedForm.timed_assessment e)) >= 10).
+Proof.
+  intros e. unfold criteria_considered. split.
+  - intro H. apply andb_true_iff in H. destruct H as [H1 H2].
+    split.
+    + apply Nat.eqb_eq. exact H1.
+    + apply Nat.leb_le. exact H2.
+  - intros [H1 H2]. apply andb_true_iff. split.
+    + apply Nat.eqb_eq. exact H1.
+    + apply Nat.leb_le. exact H2.
 Qed.
 
 End Discontinuation.
@@ -2908,6 +3258,32 @@ Proof.
     + intros [[H1 H2] [H3 H4]]. split; [lia | apply IH; split; assumption].
 Qed.
 
+Fixpoint is_stable_trajectoryb (t : trajectory) : bool :=
+  match t with
+  | [] => true
+  | [_] => true
+  | s1 :: ((s2 :: _) as rest) => (s1 =? s2) && is_stable_trajectoryb rest
+  end.
+
+Lemma is_stable_trajectoryb_correct : forall t,
+  is_stable_trajectoryb t = true <-> is_stable_trajectory t.
+Proof.
+  induction t as [|s1 [|s2 t'] IH]; simpl.
+  - tauto.
+  - tauto.
+  - rewrite andb_true_iff, Nat.eqb_eq. split.
+    + intros [H1 H2]. split; [exact H1 | apply IH; exact H2].
+    + intros [H1 H2]. split; [exact H1 | apply IH; exact H2].
+Qed.
+
+Definition is_stable_trajectory_dec (t : trajectory) :
+  {is_stable_trajectory t} + {~ is_stable_trajectory t}.
+Proof.
+  destruct (is_stable_trajectoryb t) eqn:E.
+  - left. apply is_stable_trajectoryb_correct. exact E.
+  - right. intro H. apply is_stable_trajectoryb_correct in H. congruence.
+Defined.
+
 Lemma declining_adjacent_le : forall t,
   is_declining_trajectory t ->
   forall i, S i < length t ->
@@ -2961,6 +3337,98 @@ Proof.
   intros t Htraj Hbound Hlen.
   apply Hbound.
   apply nth_In. lia.
+Qed.
+
+Lemma improving_adjacent_le : forall t,
+  is_improving_trajectory t ->
+  forall i, S i < length t ->
+  nth i t 0 <= nth (S i) t 0.
+Proof.
+  induction t as [|s1 [|s2 t'] IH]; intros Htraj i Hlen.
+  - simpl in Hlen. lia.
+  - simpl in Hlen. lia.
+  - destruct i as [|i'].
+    + simpl. simpl in Htraj. lia.
+    + simpl. apply IH.
+      * simpl in Htraj. destruct Htraj. exact H0.
+      * simpl in Hlen. simpl. lia.
+Qed.
+
+Lemma improving_trajectory_monotonic : forall t,
+  is_improving_trajectory t ->
+  forall i j, i <= j -> j < length t ->
+  nth i t 0 <= nth j t 0.
+Proof.
+  intros t Htraj i j Hij Hjlen.
+  induction j as [|j' IHj].
+  - assert (i = 0) by lia. subst. lia.
+  - destruct (Nat.eq_dec i (S j')) as [Heq|Hne].
+    + subst. lia.
+    + assert (Hij' : i <= j') by lia.
+      assert (Hjlen' : j' < length t) by lia.
+      specialize (IHj Hij' Hjlen').
+      assert (Hadj : nth j' t 0 <= nth (S j') t 0).
+      { apply improving_adjacent_le; assumption. }
+      lia.
+Qed.
+
+Theorem improving_trajectory_classification_monotonic : forall t,
+  is_improving_trajectory t ->
+  forall i j, i <= j -> j < length t ->
+  Classification.le (Classification.of_score (nth i t 0))
+                    (Classification.of_score (nth j t 0)).
+Proof.
+  intros t Htraj i j Hij Hjlen.
+  apply Classification.monotonic.
+  apply improving_trajectory_monotonic; assumption.
+Qed.
+
+Theorem improving_from_low_eventually_reassuring : forall t,
+  is_improving_trajectory t ->
+  (forall s, In s t -> s <= 10) ->
+  length t > 0 ->
+  Classification.of_score (hd 0 t) = Classification.Low ->
+  nth (length t - 1) t 0 >= 7 ->
+  Classification.of_score (nth (length t - 1) t 0) = Classification.Reassuring.
+Proof.
+  intros t _ Hbound Hlen _ Hfinal.
+  apply Classification.of_score_reassuring. exact Hfinal.
+Qed.
+
+Theorem improving_trajectory_intervention_decreasing : forall t,
+  is_improving_trajectory t ->
+  forall i j, i <= j -> j < length t ->
+  Intervention.le (Intervention.of_score (nth j t 0))
+                  (Intervention.of_score (nth i t 0)).
+Proof.
+  intros t Htraj i j Hij Hjlen.
+  apply Intervention.anti_monotonic.
+  apply improving_trajectory_monotonic; assumption.
+Qed.
+
+Theorem stable_trajectory_same_classification : forall t,
+  is_stable_trajectory t ->
+  forall i j, i < length t -> j < length t ->
+  Classification.of_score (nth i t 0) = Classification.of_score (nth j t 0).
+Proof.
+  intros t Hstable i j Hi Hj.
+  assert (Himp : is_improving_trajectory t) by (apply stable_is_improving_and_declining; tauto).
+  assert (Hdec : is_declining_trajectory t) by (apply stable_is_improving_and_declining; tauto).
+  destruct (Nat.le_ge_cases i j) as [Hij|Hji].
+  - pose proof (improving_trajectory_classification_monotonic t Himp i j Hij Hj) as H1.
+    pose proof (declining_classification_worsens t Hdec i j) as H2.
+    destruct (Nat.eq_dec i j) as [Heq|Hne].
+    + subst. reflexivity.
+    + assert (i < j) by lia.
+      specialize (H2 H Hi Hj).
+      apply Classification.le_antisym; assumption.
+  - pose proof (improving_trajectory_classification_monotonic t Himp j i Hji Hi) as H1.
+    pose proof (declining_classification_worsens t Hdec j i) as H2.
+    destruct (Nat.eq_dec i j) as [Heq|Hne].
+    + subst. reflexivity.
+    + assert (j < i) by lia.
+      specialize (H2 H Hj Hi).
+      symmetry. apply Classification.le_antisym; assumption.
 Qed.
 
 End Trajectory.
@@ -3261,18 +3729,24 @@ Extraction "apgar.ml"
   Assessment.minimum Assessment.maximum
   Assessment.appearance Assessment.pulse Assessment.grimace
   Assessment.activity Assessment.respiration
+  Assessment.assessments_with_score Assessment.count_assessments_with_score
   Classification.t Classification.of_score Classification.of_assessment
   Classification.to_nat Classification.of_nat
   Intervention.t Intervention.of_score Intervention.of_assessment
   Intervention.severity Intervention.of_nat
   Timing.Time Timing.TimedAssessment Timing.mkTimed
   Timing.time Timing.assessment Timing.should_continue Timing.next
+  Timing.example_valid_sequence Timing.sequence_scores
   ExpandedForm.t ExpandedForm.mk ExpandedForm.RespiratorySupport
   ExpandedForm.timed_assessment ExpandedForm.resp_support
   ExpandedForm.chest_compressions ExpandedForm.epinephrine
   ExpandedForm.is_resuscitated
   ExpandedForm.underlying_score ExpandedForm.underlying_classification
+  ExpandedForm.resp_support_severity ExpandedForm.resp_support_leb
   Discontinuation.criteria_considered Discontinuation.decide_discontinuation
+  Discontinuation.DiscontinuationDecision
   Pulse.of_bpm Pulse.of_bpm_detailed
   Pulse.DetailedPulse Pulse.detailed_to_simple
+  Trajectory.is_improving_trajectoryb Trajectory.is_declining_trajectoryb
+  Trajectory.is_stable_trajectoryb Trajectory.adjacent_pairs
   Reachability.witness_fn.
