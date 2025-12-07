@@ -547,6 +547,64 @@ Proof.
   exfalso. lia.
 Qed.
 
+(** Serialization support: Maturity to/from nat *)
+Definition maturity_to_nat (m : Maturity) : nat :=
+  match m with
+  | ExtremelyPreterm => 0
+  | VeryPreterm => 1
+  | ModeratelyPreterm => 2
+  | Term => 3
+  | PostTerm => 4
+  end.
+
+Definition maturity_of_nat (n : nat) : option Maturity :=
+  match n with
+  | 0 => Some ExtremelyPreterm
+  | 1 => Some VeryPreterm
+  | 2 => Some ModeratelyPreterm
+  | 3 => Some Term
+  | 4 => Some PostTerm
+  | _ => None
+  end.
+
+Lemma maturity_to_of_nat : forall m,
+  maturity_of_nat (maturity_to_nat m) = Some m.
+Proof. intros []; reflexivity. Qed.
+
+Lemma maturity_of_to_nat : forall n m,
+  maturity_of_nat n = Some m -> maturity_to_nat m = n.
+Proof.
+  intros n m H. destruct n as [|[|[|[|[|?]]]]]; simpl in H;
+  try discriminate; inversion H; reflexivity.
+Qed.
+
+Lemma maturity_to_nat_injective : forall m1 m2,
+  maturity_to_nat m1 = maturity_to_nat m2 -> m1 = m2.
+Proof. intros [] [] H; simpl in H; try discriminate; reflexivity. Qed.
+
+Lemma maturity_all_length : length maturity_all = 5.
+Proof. reflexivity. Qed.
+
+Theorem maturity_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal maturity_all 5.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact maturity_all_complete.
+  - exact maturity_all_nodup.
+  - exact maturity_all_length.
+Qed.
+
+(** Gestational age equality is decidable *)
+Definition eq_dec : forall ga1 ga2 : t, {ga1 = ga2} + {ga1 <> ga2}.
+Proof.
+  intros [w1 d1 pw1 pd1] [w2 d2 pw2 pd2].
+  destruct (Nat.eq_dec w1 w2) as [Hw|Hw].
+  - destruct (Nat.eq_dec d1 d2) as [Hd|Hd].
+    + left. subst. f_equal; apply le_unique.
+    + right. intro H. inversion H. contradiction.
+  - right. intro H. inversion H. contradiction.
+Defined.
+
 End GestationalAge.
 
 (******************************************************************************)
@@ -643,6 +701,79 @@ Definition epinephrine_dose_mcg (w : t) (dose_mcg_per_kg : nat) : nat :=
 
 Definition volume_dose_ml (w : t) (dose_ml_per_kg : nat) : nat :=
   (grams w * dose_ml_per_kg) / 1000.
+
+(** Serialization support: Category to/from nat *)
+Definition category_to_nat (c : Category) : nat :=
+  match c with
+  | ELBW => 0
+  | VLBW => 1
+  | LBW => 2
+  | Normal => 3
+  | Macrosomia => 4
+  end.
+
+Definition category_of_nat (n : nat) : option Category :=
+  match n with
+  | 0 => Some ELBW
+  | 1 => Some VLBW
+  | 2 => Some LBW
+  | 3 => Some Normal
+  | 4 => Some Macrosomia
+  | _ => None
+  end.
+
+Lemma category_to_of_nat : forall c,
+  category_of_nat (category_to_nat c) = Some c.
+Proof. intros []; reflexivity. Qed.
+
+Lemma category_of_to_nat : forall n c,
+  category_of_nat n = Some c -> category_to_nat c = n.
+Proof.
+  intros n c H. destruct n as [|[|[|[|[|?]]]]]; simpl in H;
+  try discriminate; inversion H; reflexivity.
+Qed.
+
+Lemma category_all_length : length category_all = 5.
+Proof. reflexivity. Qed.
+
+Theorem category_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal category_all 5.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact category_all_complete.
+  - exact category_all_nodup.
+  - exact category_all_length.
+Qed.
+
+(** Smart constructor with validation *)
+Definition le_6000_dec (g : nat) : {g <= 6000} + {g > 6000}.
+Proof.
+  destruct (g <=? 6000) eqn:E.
+  - left. apply Nat.leb_le. exact E.
+  - right. apply Nat.leb_gt. exact E.
+Defined.
+
+Definition of_grams_opt (g : nat) : option t :=
+  match le_6000_dec g with
+  | left pf => Some (mk g pf)
+  | right _ => None
+  end.
+
+Lemma of_grams_opt_some : forall g w,
+  of_grams_opt g = Some w -> grams w = g.
+Proof.
+  intros g w H. unfold of_grams_opt in H.
+  destruct (le_6000_dec g) as [pf|pf]; [|discriminate].
+  inversion H. reflexivity.
+Qed.
+
+Lemma of_grams_opt_none : forall g,
+  of_grams_opt g = None <-> g > 6000.
+Proof.
+  intros g. unfold of_grams_opt. split; intro H.
+  - destruct (le_6000_dec g) as [pf|pf]; [discriminate | exact pf].
+  - destruct (le_6000_dec g) as [pf|pf]; [lia | reflexivity].
+Qed.
 
 End BirthWeight.
 
@@ -891,6 +1022,43 @@ Proof.
   apply andb_true_iff. split; apply Nat.leb_le; lia.
 Qed.
 
+(** Population-aware target range: adjusts upper bound for preterm infants *)
+Definition target_hi_for_population_and_minute (pop : Population) (r : TargetRange) : nat :=
+  match pop, r with
+  | PretermPopulation, Range10min => preterm_target_hi
+  | _, _ => target_hi r
+  end.
+
+Definition in_target_for_population (s : t) (r : TargetRange) (pop : Population) : bool :=
+  (target_lo r <=? value s) && (value s <=? target_hi_for_population_and_minute pop r).
+
+(** Preterm-aware range selection: same time-based selection but with population-adjusted upper bounds *)
+Definition range_for_minute_with_population (min : nat) (pop : Population) : TargetRange * nat :=
+  let r := range_for_minute min in
+  (r, target_hi_for_population_and_minute pop r).
+
+Theorem preterm_10min_range_narrower :
+  target_hi_for_population_and_minute PretermPopulation Range10min <
+  target_hi_for_population_and_minute TermPopulation Range10min.
+Proof.
+  unfold target_hi_for_population_and_minute, preterm_target_hi, target_hi, target_10min_hi.
+  lia.
+Qed.
+
+Theorem term_population_uses_standard_target : forall r,
+  target_hi_for_population_and_minute TermPopulation r = target_hi r.
+Proof. intros []; reflexivity. Qed.
+
+(** Clinical safety: preterm target prevents hyperoxia-induced ROP *)
+Theorem preterm_target_prevents_hyperoxia : forall s,
+  in_target_for_population s Range10min PretermPopulation = true ->
+  value s <= preterm_target_hi.
+Proof.
+  intros s H. unfold in_target_for_population, target_hi_for_population_and_minute in H.
+  apply andb_true_iff in H. destruct H as [_ H].
+  apply Nat.leb_le in H. exact H.
+Qed.
+
 (** Gap-free coverage: Every SpO2 in [60,95] is covered by at least one time window.
     The coverage follows from targets_cover_transition which proves this via lia. *)
 
@@ -1058,6 +1226,68 @@ Proof.
   unfold severe_acidemia_threshold_x100, acidemia_threshold_x100 in *.
   apply Nat.ltb_lt in H. apply Nat.ltb_lt. lia.
 Qed.
+
+(** pH clinical validity: must be in physiological range [6.50, 7.60] *)
+Definition ph_min_x100 : nat := 650.
+Definition ph_max_x100 : nat := 760.
+
+Definition ph_clinically_valid (v : nat) : bool :=
+  (ph_min_x100 <=? v) && (v <=? ph_max_x100).
+
+(** Smart constructor for pH with validation *)
+Definition ph_valid_dec (v : nat) : {ph_min_x100 <= v /\ v <= ph_max_x100} + {v < ph_min_x100 \/ v > ph_max_x100}.
+Proof.
+  destruct (ph_min_x100 <=? v) eqn:E1; destruct (v <=? ph_max_x100) eqn:E2.
+  - left. split; [apply Nat.leb_le; exact E1 | apply Nat.leb_le; exact E2].
+  - right. right. apply Nat.leb_gt. exact E2.
+  - right. left. apply Nat.leb_gt. exact E1.
+  - right. left. apply Nat.leb_gt. exact E1.
+Defined.
+
+Definition make_pH (v : nat) : option pH :=
+  match ph_valid_dec v with
+  | left pf => Some (mkpH v (proj2 pf))
+  | right _ => None
+  end.
+
+Lemma make_pH_some : forall v p,
+  make_pH v = Some p -> ph_value_x100 p = v.
+Proof.
+  intros v p H. unfold make_pH in H.
+  destruct (ph_valid_dec v) as [[H1 H2]|[H1|H1]]; [|discriminate|discriminate].
+  inversion H. reflexivity.
+Qed.
+
+Lemma make_pH_ensures_physiological : forall v p,
+  make_pH v = Some p -> ph_min_x100 <= ph_value_x100 p <= ph_max_x100.
+Proof.
+  intros v p H. unfold make_pH in H.
+  destruct (ph_valid_dec v) as [[H1 H2]|[H1|H1]]; [|discriminate|discriminate].
+  inversion H. simpl. split; assumption.
+Qed.
+
+Lemma make_pH_none_low : forall v,
+  v < ph_min_x100 -> make_pH v = None.
+Proof.
+  intros v H. unfold make_pH.
+  destruct (ph_valid_dec v) as [[H1 H2]|[H1|H1]]; [unfold ph_min_x100 in *; lia|reflexivity|reflexivity].
+Qed.
+
+Lemma make_pH_none_high : forall v,
+  v > ph_max_x100 -> make_pH v = None.
+Proof.
+  intros v H. unfold make_pH.
+  destruct (ph_valid_dec v) as [[H1 H2]|[H1|H1]]; [unfold ph_max_x100 in *; lia|reflexivity|reflexivity].
+Qed.
+
+(** pH decidable equality *)
+Definition pH_eq_dec : forall p1 p2 : pH, {p1 = p2} + {p1 <> p2}.
+Proof.
+  intros [v1 pf1] [v2 pf2].
+  destruct (Nat.eq_dec v1 v2) as [Heq|Hne].
+  - left. subst. f_equal. apply le_unique.
+  - right. intro H. inversion H. contradiction.
+Defined.
 
 (** pCO2: partial pressure of CO2 in mmHg. Normal UA ~45-55, elevated >60 *)
 Record pCO2 : Type := mkpCO2 {
@@ -4837,6 +5067,53 @@ Proof. reflexivity. Qed.
 Lemma fio2_40_is_supplemental : is_supplemental fio2_40 = true.
 Proof. reflexivity. Qed.
 
+(** Smart constructor for FiO2 with validation *)
+Definition fio2_valid_dec (p : nat) : {21 <= p /\ p <= 100} + {p < 21 \/ p > 100}.
+Proof.
+  destruct (21 <=? p) eqn:E1; destruct (p <=? 100) eqn:E2.
+  - left. split; [apply Nat.leb_le; exact E1 | apply Nat.leb_le; exact E2].
+  - right. right. apply Nat.leb_gt. exact E2.
+  - right. left. apply Nat.leb_gt. exact E1.
+  - right. left. apply Nat.leb_gt. exact E1.
+Defined.
+
+Definition make_fio2 (p : nat) : option FiO2 :=
+  match fio2_valid_dec p with
+  | left pf => Some (mkFiO2 p (proj1 pf) (proj2 pf))
+  | right _ => None
+  end.
+
+Lemma make_fio2_some : forall p f,
+  make_fio2 p = Some f -> fio2_percent f = p.
+Proof.
+  intros p f H. unfold make_fio2 in H.
+  destruct (fio2_valid_dec p) as [[H1 H2]|[H1|H1]]; [|discriminate|discriminate].
+  inversion H. reflexivity.
+Qed.
+
+Lemma make_fio2_none_low : forall p,
+  p < 21 -> make_fio2 p = None.
+Proof.
+  intros p H. unfold make_fio2.
+  destruct (fio2_valid_dec p) as [[H1 H2]|[H1|H1]]; [lia|reflexivity|reflexivity].
+Qed.
+
+Lemma make_fio2_none_high : forall p,
+  p > 100 -> make_fio2 p = None.
+Proof.
+  intros p H. unfold make_fio2.
+  destruct (fio2_valid_dec p) as [[H1 H2]|[H1|H1]]; [lia|reflexivity|reflexivity].
+Qed.
+
+(** FiO2 decidable equality *)
+Definition fio2_eq_dec : forall f1 f2 : FiO2, {f1 = f2} + {f1 <> f2}.
+Proof.
+  intros [p1 min1 max1] [p2 min2 max2].
+  destruct (Nat.eq_dec p1 p2) as [Heq|Hne].
+  - left. subst. f_equal; apply le_unique.
+  - right. intro H. inversion H. contradiction.
+Defined.
+
 (** ETT parameters: tube size in mm x10, depth at lip in cm x10 *)
 Inductive ETTSize : Type :=
   | ETT_2_5 : ETTSize
@@ -4879,6 +5156,60 @@ Definition ett_depth_for_weight (weight_kg : nat) : nat :=
 Definition is_appropriate_depth (p : ETTParams) (weight_kg : nat) : bool :=
   let expected := ett_depth_for_weight weight_kg in
   (expected - 1 <=? ett_depth_cm_x10 p) && (ett_depth_cm_x10 p <=? expected + 1).
+
+(** ETT depth clinical validity: depth must be positive and <= 12cm *)
+Definition ett_depth_clinically_valid (depth : nat) : bool :=
+  (0 <? depth) && (depth <=? 120).
+
+(** Smart constructor for ETTParams with validation *)
+Definition ett_params_valid_dec (size : ETTSize) (depth : nat) :
+  {depth > 0 /\ depth <= 120} + {depth = 0 \/ depth > 120}.
+Proof.
+  destruct (0 <? depth) eqn:E1; destruct (depth <=? 120) eqn:E2.
+  - left. split; [apply Nat.ltb_lt; exact E1 | apply Nat.leb_le; exact E2].
+  - right. right. apply Nat.leb_gt. exact E2.
+  - right. left. apply Nat.ltb_ge in E1. lia.
+  - right. left. apply Nat.ltb_ge in E1. lia.
+Defined.
+
+Definition make_ett_params (size : ETTSize) (depth : nat) : option ETTParams :=
+  match ett_params_valid_dec size depth with
+  | left pf => Some (mkETTParams size depth (proj2 pf))
+  | right _ => None
+  end.
+
+Lemma make_ett_params_some : forall size depth p,
+  make_ett_params size depth = Some p ->
+  ett_size p = size /\ ett_depth_cm_x10 p = depth.
+Proof.
+  intros size depth p H. unfold make_ett_params in H.
+  destruct (ett_params_valid_dec size depth) as [[H1 H2]|[H1|H1]]; [|discriminate|discriminate].
+  inversion H. split; reflexivity.
+Qed.
+
+Lemma make_ett_params_none_zero : forall size,
+  make_ett_params size 0 = None.
+Proof.
+  intros size. unfold make_ett_params.
+  destruct (ett_params_valid_dec size 0) as [[H1 H2]|[H1|H1]]; [lia|reflexivity|reflexivity].
+Qed.
+
+Lemma make_ett_params_ensures_positive : forall size depth p,
+  make_ett_params size depth = Some p -> ett_depth_cm_x10 p > 0.
+Proof.
+  intros size depth p H. unfold make_ett_params in H.
+  destruct (ett_params_valid_dec size depth) as [[H1 H2]|[H1|H1]]; [|discriminate|discriminate].
+  inversion H. simpl. exact H1.
+Qed.
+
+(** ETTSize decidable equality and completeness *)
+Definition ett_size_all : list ETTSize := [ETT_2_5; ETT_3_0; ETT_3_5; ETT_4_0].
+
+Lemma ett_size_all_complete : forall s : ETTSize, In s ett_size_all.
+Proof. intros []; simpl; auto. Qed.
+
+Lemma ett_size_all_nodup : NoDup ett_size_all.
+Proof. repeat constructor; simpl; intuition discriminate. Qed.
 
 (** Volume expansion agents for resuscitation *)
 Inductive VolumeAgent : Type :=
@@ -7004,6 +7335,57 @@ Definition log_is_chronologicalb (log : AuditLog) : bool :=
   | e :: rest => log_is_chronologicalb_aux (timestamp_seconds e) rest
   end.
 
+(** Auxiliary lemma: chronologicalb_aux implies adjacent ordering *)
+Lemma log_is_chronologicalb_aux_adjacent : forall prev log,
+  log_is_chronologicalb_aux prev log = true ->
+  match log with
+  | [] => True
+  | e :: _ => prev <= timestamp_seconds e
+  end.
+Proof.
+  intros prev log H.
+  destruct log as [|e rest]; [trivial|].
+  simpl in H. apply andb_true_iff in H. destruct H as [H _].
+  apply Nat.leb_le in H. exact H.
+Qed.
+
+(** Chronologicalb implies adjacent elements are ordered *)
+Lemma log_is_chronologicalb_implies_adjacent : forall log,
+  log_is_chronologicalb log = true ->
+  forall i, S i < length log ->
+  timestamp_seconds (nth i log (mkAuditEvent Created 0 0 Assessment.minimum)) <=
+  timestamp_seconds (nth (S i) log (mkAuditEvent Created 0 0 Assessment.minimum)).
+Proof.
+  intros log H i Hi.
+  generalize dependent i. generalize dependent log.
+  induction log as [|e1 [|e2 rest] IH]; intros H i Hi.
+  - simpl in Hi. lia.
+  - simpl in Hi. lia.
+  - destruct i as [|i'].
+    + simpl. simpl in H. apply andb_true_iff in H. destruct H as [H _].
+      apply Nat.leb_le in H. exact H.
+    + simpl. simpl in Hi.
+      apply IH.
+      * simpl in H. apply andb_true_iff in H. destruct H as [_ H]. exact H.
+      * simpl. lia.
+Qed.
+
+(** Full correctness: chronologicalb true implies chronological Prop *)
+Lemma log_is_chronologicalb_correct_forward : forall log,
+  log_is_chronologicalb log = true -> log_is_chronological log.
+Proof.
+  intros log H i j Hij Hjlen.
+  induction j as [|j' IHj].
+  - lia.
+  - destruct (Nat.eq_dec i j') as [Heq|Hne].
+    + subst. apply log_is_chronologicalb_implies_adjacent; assumption.
+    + assert (Hi' : i < j') by lia.
+      assert (Hj'len : j' < length log) by lia.
+      specialize (IHj Hi' Hj'len).
+      pose proof (log_is_chronologicalb_implies_adjacent log H j' Hjlen) as Hadj.
+      lia.
+Qed.
+
 Record ValidAuditLog : Type := mkValidLog {
   log_events : AuditLog;
   log_chrono : log_is_chronological log_events;
@@ -7515,4 +7897,14 @@ Extraction "apgar.ml"
   AuditTrail.is_finalized AuditTrail.can_modify
   AuditTrail.latest_score AuditTrail.latest_assessment
   AuditTrail.score_changed AuditTrail.count_score_changes
-  SpO2.covers_value_reflect SpO2.final_range_covered.
+  SpO2.covers_value_reflect SpO2.final_range_covered
+  GestationalAge.maturity_to_nat GestationalAge.maturity_of_nat GestationalAge.eq_dec
+  BirthWeight.category_to_nat BirthWeight.category_of_nat
+  BirthWeight.le_6000_dec BirthWeight.of_grams_opt
+  SpO2.target_hi_for_population_and_minute SpO2.in_target_for_population
+  SpO2.range_for_minute_with_population
+  CordBloodGas.ph_clinically_valid CordBloodGas.make_pH CordBloodGas.pH_eq_dec
+  ExpandedForm.make_fio2 ExpandedForm.fio2_eq_dec
+  ExpandedForm.ett_depth_clinically_valid ExpandedForm.make_ett_params
+  ExpandedForm.ett_size_all ExpandedForm.ett_size_eq_dec
+  AuditTrail.log_is_chronologicalb_correct_forward.
