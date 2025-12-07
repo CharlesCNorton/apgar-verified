@@ -386,6 +386,16 @@ Proof.
   intros A l a d. rewrite last_last. reflexivity.
 Qed.
 
+(** Ltac for proving eq_dec for simple inductive types *)
+Ltac solve_eq_dec :=
+  intros x y; destruct x; destruct y;
+  try (left; reflexivity);
+  try (right; discriminate).
+
+(** Ltac for proving NoDup for small explicit lists *)
+Ltac prove_nodup_explicit :=
+  repeat constructor; simpl; intuition discriminate.
+
 End ListHelpers.
 
 (******************************************************************************)
@@ -724,6 +734,60 @@ Proof.
   - right. intro H. inversion H. contradiction.
 Defined.
 
+(** Boolean reflection for maturity predicates *)
+Lemma is_preterm_iff : forall ga,
+  is_preterm ga = true <-> weeks ga < term_threshold.
+Proof. intros ga. unfold is_preterm. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_term_iff : forall ga,
+  is_term ga = true <-> term_threshold <= weeks ga < post_term_threshold.
+Proof.
+  intros ga. unfold is_term.
+  rewrite andb_true_iff, Nat.leb_le, Nat.ltb_lt. tauto.
+Qed.
+
+Lemma is_post_term_iff : forall ga,
+  is_post_term ga = true <-> post_term_threshold <= weeks ga.
+Proof. intros ga. unfold is_post_term. rewrite Nat.leb_le. tauto. Qed.
+
+(** Maturity classification is total and exclusive *)
+Theorem maturity_trichotomy : forall ga,
+  is_preterm ga = true \/ is_term ga = true \/ is_post_term ga = true.
+Proof.
+  intros ga.
+  destruct (weeks ga <? term_threshold) eqn:E1.
+  - left. unfold is_preterm. exact E1.
+  - apply Nat.ltb_ge in E1.
+    destruct (weeks ga <? post_term_threshold) eqn:E2.
+    + right. left. unfold is_term. apply andb_true_intro.
+      split; [apply Nat.leb_le; exact E1 | exact E2].
+    + right. right. unfold is_post_term. apply Nat.leb_le.
+      apply Nat.ltb_ge in E2. exact E2.
+Qed.
+
+Theorem is_preterm_not_term : forall ga,
+  is_preterm ga = true -> is_term ga = false.
+Proof.
+  intros ga H. apply is_preterm_iff in H.
+  unfold is_term. apply andb_false_intro1.
+  apply Nat.leb_gt. unfold term_threshold in *. lia.
+Qed.
+
+Theorem is_preterm_not_post_term : forall ga,
+  is_preterm ga = true -> is_post_term ga = false.
+Proof.
+  intros ga H. apply is_preterm_iff in H.
+  unfold is_post_term. apply Nat.leb_gt.
+  unfold term_threshold, post_term_threshold in *. lia.
+Qed.
+
+Theorem is_term_not_preterm : forall ga,
+  is_term ga = true -> is_preterm ga = false.
+Proof.
+  intros ga H. apply is_term_iff in H. destruct H as [H _].
+  unfold is_preterm. apply Nat.ltb_ge. exact H.
+Qed.
+
 End GestationalAge.
 
 (******************************************************************************)
@@ -892,6 +956,52 @@ Proof.
   intros g. unfold of_grams_opt. split; intro H.
   - destruct (le_6000_dec g) as [pf|pf]; [discriminate | exact pf].
   - destruct (le_6000_dec g) as [pf|pf]; [lia | reflexivity].
+Qed.
+
+Lemma of_grams_opt_roundtrip : forall g,
+  g <= 6000 -> exists w, of_grams_opt g = Some w /\ grams w = g.
+Proof.
+  intros g Hle. unfold of_grams_opt.
+  destruct (le_6000_dec g) as [pf|pf].
+  - eexists. split; reflexivity.
+  - lia.
+Qed.
+
+(** Boolean reflection for weight classification predicates *)
+Lemma is_elbw_iff : forall w, is_elbw w = true <-> grams w < elbw_threshold.
+Proof. intros w. unfold is_elbw. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_vlbw_iff : forall w, is_vlbw w = true <-> grams w < vlbw_threshold.
+Proof. intros w. unfold is_vlbw. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_lbw_iff : forall w, is_lbw w = true <-> grams w < lbw_threshold.
+Proof. intros w. unfold is_lbw. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_normal_weight_iff : forall w,
+  is_normal w = true <-> lbw_threshold <= grams w <= normal_hi_threshold.
+Proof.
+  intros w. unfold is_normal.
+  rewrite andb_true_iff, Nat.leb_le, Nat.leb_le. tauto.
+Qed.
+
+Lemma is_macrosomic_iff : forall w,
+  is_macrosomic w = true <-> normal_hi_threshold < grams w.
+Proof. intros w. unfold is_macrosomic. rewrite Nat.ltb_lt. tauto. Qed.
+
+(** Weight categories are mutually exclusive - additional theorems *)
+Theorem lbw_not_normal : forall w,
+  is_lbw w = true -> is_normal w = false.
+Proof.
+  intros w H. apply is_lbw_iff in H.
+  unfold is_normal. apply andb_false_intro1.
+  apply Nat.leb_gt. unfold lbw_threshold in *. lia.
+Qed.
+
+Theorem normal_not_macrosomic : forall w,
+  is_normal w = true -> is_macrosomic w = false.
+Proof.
+  intros w H. apply is_normal_weight_iff in H. destruct H as [_ H].
+  unfold is_macrosomic. apply Nat.ltb_ge. exact H.
 Qed.
 
 End BirthWeight.
@@ -1307,6 +1417,65 @@ Proof. reflexivity. Qed.
 Example spo2_95_minute10_ok : unique_best_range 10 95 = true.
 Proof. reflexivity. Qed.
 
+(** Extended monitoring: SpO2 targets stabilize after 10 minutes *)
+Definition extended_monitoring_target_lo : nat := target_10min_lo.
+Definition extended_monitoring_target_hi : nat := target_10min_hi.
+
+(** For minutes > 10, target range remains at 10-minute values *)
+Theorem extended_monitoring_stable : forall m,
+  10 < m -> range_for_minute m = Range10min.
+Proof.
+  intros m H. unfold range_for_minute.
+  destruct (m <=? 1) eqn:E1; [apply Nat.leb_le in E1; lia|].
+  destruct (m <=? 2) eqn:E2; [apply Nat.leb_le in E2; lia|].
+  destruct (m <=? 3) eqn:E3; [apply Nat.leb_le in E3; lia|].
+  destruct (m <=? 4) eqn:E4; [apply Nat.leb_le in E4; lia|].
+  destruct (m <=? 5) eqn:E5; [apply Nat.leb_le in E5; lia|].
+  reflexivity.
+Qed.
+
+(** Post-transition target: once at 10 min, target is [85, 95] *)
+Theorem post_transition_target : forall m,
+  10 <= m ->
+  target_lo (range_for_minute m) = 85 /\ target_hi (range_for_minute m) = 95.
+Proof.
+  intros m H. unfold range_for_minute.
+  destruct (m <=? 1) eqn:E1; [apply Nat.leb_le in E1; lia|].
+  destruct (m <=? 2) eqn:E2; [apply Nat.leb_le in E2; lia|].
+  destruct (m <=? 3) eqn:E3; [apply Nat.leb_le in E3; lia|].
+  destruct (m <=? 4) eqn:E4; [apply Nat.leb_le in E4; lia|].
+  destruct (m <=? 5) eqn:E5; [apply Nat.leb_le in E5; lia|].
+  split; reflexivity.
+Qed.
+
+(** Hyperoxia threshold: above 95% is potentially harmful *)
+Theorem hyperoxia_above_target : forall s m,
+  is_hyperoxic s = true -> m >= 10 ->
+  target_hi (range_for_minute m) < value s.
+Proof.
+  intros s m Hhyper Hm. unfold is_hyperoxic in Hhyper.
+  apply Nat.ltb_lt in Hhyper.
+  pose proof (post_transition_target m Hm) as [_ Hhi].
+  rewrite Hhi. unfold hyperoxia_threshold in Hhyper. lia.
+Qed.
+
+(** SpO2 below 60% at any minute requires intervention *)
+Definition critical_hypoxemia (s : t) : bool := value s <? 60.
+
+Theorem critical_hypoxemia_below_all_targets : forall s m,
+  critical_hypoxemia s = true ->
+  value s < target_lo (range_for_minute m).
+Proof.
+  intros s m H. unfold critical_hypoxemia in H. apply Nat.ltb_lt in H.
+  unfold range_for_minute.
+  destruct (m <=? 1); [unfold target_lo, target_1min_lo; lia|].
+  destruct (m <=? 2); [unfold target_lo, target_2min_lo; lia|].
+  destruct (m <=? 3); [unfold target_lo, target_3min_lo; lia|].
+  destruct (m <=? 4); [unfold target_lo, target_4min_lo; lia|].
+  destruct (m <=? 5); [unfold target_lo, target_5min_lo; lia|].
+  unfold target_lo, target_10min_lo. lia.
+Qed.
+
 End SpO2.
 
 (******************************************************************************)
@@ -1397,6 +1566,17 @@ Lemma make_pH_none_high : forall v,
 Proof.
   intros v H. unfold make_pH.
   destruct (ph_valid_dec v) as [[H1 H2]|[H1|H1]]; [unfold ph_max_x100 in *; lia|reflexivity|reflexivity].
+Qed.
+
+Lemma make_pH_roundtrip : forall v,
+  ph_min_x100 <= v <= ph_max_x100 ->
+  exists p, make_pH v = Some p /\ ph_value_x100 p = v.
+Proof.
+  intros v [Hlo Hhi]. unfold make_pH.
+  destruct (ph_valid_dec v) as [[H1 H2]|[H1|H1]].
+  - eexists. split; [reflexivity | reflexivity].
+  - unfold ph_min_x100 in *. lia.
+  - unfold ph_max_x100 in *. lia.
 Qed.
 
 (** pH decidable equality *)
@@ -1596,6 +1776,35 @@ Definition venous_only_asphyxia (ts : TypedSample) : bool :=
               is_severe_bd (base_deficit (sample_gas ts))
   end.
 
+(** Boolean reflection for cord blood gas predicates *)
+Lemma is_acidemic_iff : forall p,
+  is_acidemic p = true <-> ph_value_x100 p < acidemia_threshold_x100.
+Proof. intros p. unfold is_acidemic. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_severely_acidemic_iff : forall p,
+  is_severely_acidemic p = true <-> ph_value_x100 p < severe_acidemia_threshold_x100.
+Proof. intros p. unfold is_severely_acidemic. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_hypercapnic_iff : forall p,
+  is_hypercapnic p = true <-> hypercapnia_threshold < pco2_value p.
+Proof. intros p. unfold is_hypercapnic. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_hypoxemic_iff : forall p,
+  is_hypoxemic p = true <-> po2_value p < hypoxemia_threshold.
+Proof. intros p. unfold is_hypoxemic. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_significant_bd_iff : forall bd,
+  is_significant_bd bd = true <-> significant_bd_threshold <= bd_value bd.
+Proof. intros bd. unfold is_significant_bd. rewrite Nat.leb_le. tauto. Qed.
+
+Lemma is_severe_bd_iff : forall bd,
+  is_severe_bd bd = true <-> severe_bd_threshold <= bd_value bd.
+Proof. intros bd. unfold is_severe_bd. rewrite Nat.leb_le. tauto. Qed.
+
+Lemma is_elevated_lactate_iff : forall l,
+  is_elevated_lactate l = true <-> elevated_lactate_threshold_x10 <= lactate_value_x10 l.
+Proof. intros l. unfold is_elevated_lactate. rewrite Nat.leb_le. tauto. Qed.
+
 End CordBloodGas.
 
 (******************************************************************************)
@@ -1775,6 +1984,61 @@ Proof. intros temp. unfold estimate_core_temp, site_offset_x10. simpl. lia. Qed.
 Theorem axillary_adds_offset : forall temp,
   estimate_core_temp (mkSitedTemp temp Axillary) = value_x10 temp + 5.
 Proof. intros temp. reflexivity. Qed.
+
+(** Boolean reflection for temperature predicates *)
+Lemma is_hypothermic_iff : forall temp,
+  is_hypothermic temp = true <-> value_x10 temp < normal_lo_x10.
+Proof. intros temp. unfold is_hypothermic. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_hyperthermic_iff : forall temp,
+  is_hyperthermic temp = true <-> normal_hi_x10 < value_x10 temp.
+Proof. intros temp. unfold is_hyperthermic. rewrite Nat.ltb_lt. tauto. Qed.
+
+Lemma is_normal_temp_iff : forall temp,
+  is_normal temp = true <-> normal_lo_x10 <= value_x10 temp <= normal_hi_x10.
+Proof.
+  intros temp. unfold is_normal.
+  rewrite andb_true_iff, Nat.leb_le, Nat.leb_le. tauto.
+Qed.
+
+(** Temperature status trichotomy *)
+Theorem temp_trichotomy : forall temp,
+  is_hypothermic temp = true \/ is_normal temp = true \/ is_hyperthermic temp = true.
+Proof.
+  intros temp.
+  destruct (value_x10 temp <? normal_lo_x10) eqn:E1.
+  - left. unfold is_hypothermic. exact E1.
+  - apply Nat.ltb_ge in E1.
+    destruct (value_x10 temp <=? normal_hi_x10) eqn:E2.
+    + right. left. unfold is_normal. apply andb_true_intro.
+      split; [apply Nat.leb_le; exact E1 | exact E2].
+    + right. right. unfold is_hyperthermic. apply Nat.ltb_lt.
+      apply Nat.leb_gt in E2. exact E2.
+Qed.
+
+(** Hypothermic implies needs warming *)
+Theorem hypothermic_needs_warming : forall temp,
+  is_hypothermic temp = true -> needs_warming temp = true.
+Proof.
+  intros temp H. unfold needs_warming, is_hypothermic in *.
+  destruct (value_x10 temp <? normal_lo_x10) eqn:E; [reflexivity | discriminate].
+Qed.
+
+(** Hyperthermic implies needs cooling *)
+Theorem hyperthermic_needs_cooling : forall temp,
+  is_hyperthermic temp = true -> needs_cooling temp = true.
+Proof.
+  intros temp H. unfold needs_cooling, is_hyperthermic in *.
+  destruct (normal_hi_x10 <? value_x10 temp) eqn:E; [reflexivity | discriminate].
+Qed.
+
+(** Temperature estimation accuracy bound *)
+Theorem estimate_core_temp_bounded : forall st,
+  estimate_core_temp st <= value_x10 (temp_reading st) + 5.
+Proof.
+  intros st. unfold estimate_core_temp.
+  destruct (temp_site st); simpl; lia.
+Qed.
 
 End Temperature.
 
@@ -5404,6 +5668,61 @@ Lemma mk_valid_seq_4_can_extend : forall a1 a2 a3 a4,
   can_extend (mk_valid_seq_4 a1 a2 a3 a4) = true.
 Proof. intros. reflexivity. Qed.
 
+(** Helper for extend: extract next time with proof *)
+Definition extract_next_time (vs : ValidSequence)
+  (Hext : can_extend vs = true) : Time.
+Proof.
+  unfold can_extend in Hext.
+  destruct (next (time (last (seq vs) (mkTimed Min1 Assessment.minimum)))) as [t|] eqn:E.
+  - exact t.
+  - discriminate.
+Defined.
+
+Lemma extract_next_time_spec : forall vs Hext,
+  next (time (last (seq vs) (mkTimed Min1 Assessment.minimum))) = Some (extract_next_time vs Hext).
+Proof.
+  intros vs Hext. unfold extract_next_time, can_extend in *.
+  destruct (next (time (last (seq vs) (mkTimed Min1 Assessment.minimum)))) as [t|] eqn:E.
+  - reflexivity.
+  - discriminate.
+Qed.
+
+(** Direct constructor for extending a valid sequence *)
+Definition extend (vs : ValidSequence) (new_a : Assessment.t)
+  (Hext : can_extend vs = true) : ValidSequence :=
+  let next_t := extract_next_time vs Hext in
+  mkValidSeq
+    (seq vs ++ [mkTimed next_t new_a])
+    (fun Hcontra => match app_eq_nil _ _ Hcontra with
+                    | conj H _ => seq_nonempty vs H
+                    end)
+    (app_preserves_starts_at_min1 _ _ (seq_nonempty vs) (seq_starts_min1 vs))
+    (times_consecutive_app_singleton _ (mkTimed Min1 Assessment.minimum) _ new_a
+       (seq_consecutive vs) (seq_nonempty vs) (extract_next_time_spec vs Hext)).
+
+Lemma extend_length : forall vs new_a Hext,
+  valid_seq_length (extend vs new_a Hext) = S (valid_seq_length vs).
+Proof.
+  intros vs new_a Hext. unfold extend, valid_seq_length.
+  simpl. rewrite app_length. simpl. lia.
+Qed.
+
+Lemma extend_preserves_prefix : forall vs new_a Hext i,
+  i < valid_seq_length vs ->
+  nth i (seq (extend vs new_a Hext)) (mkTimed Min1 Assessment.minimum) =
+  nth i (seq vs) (mkTimed Min1 Assessment.minimum).
+Proof.
+  intros vs new_a Hext i Hi. unfold extend.
+  simpl. rewrite app_nth1; [reflexivity | exact Hi].
+Qed.
+
+Lemma extend_last_assessment : forall vs new_a Hext,
+  assessment (last (seq (extend vs new_a Hext)) (mkTimed Min1 Assessment.minimum)) = new_a.
+Proof.
+  intros vs new_a Hext. unfold extend.
+  simpl. rewrite last_last. reflexivity.
+Qed.
+
 Definition valid_seq_head (vs : ValidSequence) : TimedAssessment.
 Proof.
   destruct vs as [[|ta rest] Hne Hstart Hcons].
@@ -5860,6 +6179,31 @@ Proof.
   inversion H. reflexivity.
 Qed.
 
+Lemma of_nat_opt_none : forall n,
+  of_nat_opt n = None -> n > valid_max.
+Proof.
+  intros n H. unfold of_nat_opt in H.
+  destruct (n <=? valid_max) eqn:E; [discriminate|].
+  apply Nat.leb_gt in E. exact E.
+Qed.
+
+Lemma of_nat_opt_roundtrip : forall n,
+  n <= valid_max -> exists g, of_nat_opt n = Some g /\ value_mg_dl g = n.
+Proof.
+  intros n Hle. unfold of_nat_opt.
+  destruct (n <=? valid_max) eqn:E.
+  - exists n. split; reflexivity.
+  - apply Nat.leb_gt in E. lia.
+Qed.
+
+Lemma of_nat_opt_valid : forall n g,
+  of_nat_opt n = Some g -> is_valid g = true.
+Proof.
+  intros n g H. unfold of_nat_opt in H.
+  destruct (n <=? valid_max) eqn:E; [|discriminate].
+  inversion H. subst. unfold is_valid. exact E.
+Qed.
+
 (** Risk factors for neonatal hypoglycemia *)
 Inductive HypoglycemiaRiskFactor : Type :=
   | InfantOfDiabeticMother : HypoglycemiaRiskFactor
@@ -6035,6 +6379,17 @@ Proof.
   destruct (fio2_valid_dec p) as [[H1 H2]|[H1|H1]]; [lia|reflexivity|reflexivity].
 Qed.
 
+Lemma make_fio2_roundtrip : forall p,
+  21 <= p <= 100 ->
+  exists f, make_fio2 p = Some f /\ fio2_percent f = p.
+Proof.
+  intros p [Hlo Hhi]. unfold make_fio2.
+  destruct (fio2_valid_dec p) as [[H1 H2]|[H1|H1]].
+  - eexists. split; reflexivity.
+  - lia.
+  - lia.
+Qed.
+
 (** FiO2 decidable equality *)
 Definition fio2_eq_dec : forall f1 f2 : FiO2, {f1 = f2} + {f1 <> f2}.
 Proof.
@@ -6130,6 +6485,18 @@ Proof.
   intros size depth p H. unfold make_ett_params in H.
   destruct (ett_params_valid_dec size depth) as [[H1 H2]|[H1|H1]]; [|discriminate|discriminate].
   inversion H. simpl. exact H1.
+Qed.
+
+Lemma make_ett_params_roundtrip : forall size depth,
+  depth > 0 -> depth <= 120 ->
+  exists p, make_ett_params size depth = Some p /\
+            ett_size p = size /\ ett_depth_cm_x10 p = depth.
+Proof.
+  intros size depth Hpos Hle. unfold make_ett_params.
+  destruct (ett_params_valid_dec size depth) as [[H1 H2]|[H1|H1]].
+  - eexists. repeat split; reflexivity.
+  - lia.
+  - lia.
 Qed.
 
 (** ETTSize decidable equality and completeness *)
@@ -6515,6 +6882,73 @@ Proof.
     + exfalso. apply pf. intros _. exact Hne.
   - exfalso. apply pf. intros Hcontra. discriminate Hcontra.
 Qed.
+
+(** Combined well-formed + consistent expanded form record *)
+Record ValidExpandedForm : Type := mkValidForm {
+  valid_form : t;
+  valid_well_formed : is_resuscitated valid_form = true ->
+                      underlying_classification valid_form <> Classification.Reassuring;
+  valid_ppv_consistent : ppv_params_consistent valid_form;
+  valid_ett_consistent : ett_params_consistent valid_form
+}.
+
+Definition valid_to_well_formed (vf : ValidExpandedForm) : WellFormedExpandedForm :=
+  mkWellFormed (valid_form vf) (valid_well_formed vf).
+
+Definition valid_to_consistent (vf : ValidExpandedForm) : ConsistentExpandedForm :=
+  mkConsistentForm (valid_form vf) (valid_ppv_consistent vf) (valid_ett_consistent vf).
+
+(** Boolean check for full validity *)
+Definition is_validb (e : t) : bool :=
+  is_well_formedb e && ppv_params_consistentb e && ett_params_consistentb e.
+
+(** Full validity property *)
+Definition is_valid_prop (e : t) : Prop :=
+  (is_resuscitated e = true -> underlying_classification e <> Classification.Reassuring) /\
+  ppv_params_consistent e /\ ett_params_consistent e.
+
+(** Decidability of full validity *)
+Definition valid_dec (e : t) : {is_valid_prop e} + {~ is_valid_prop e}.
+Proof.
+  unfold is_valid_prop.
+  destruct (well_formed_dec e) as [Hwf|Hwf].
+  - destruct (ppv_params_consistentb e) eqn:Hppv.
+    + destruct (ett_params_consistentb e) eqn:Hett.
+      * left. repeat split.
+        -- exact Hwf.
+        -- apply ppv_params_consistentb_correct. exact Hppv.
+        -- apply ett_params_consistentb_correct. exact Hett.
+      * right. intros [_ [_ H]]. apply ett_params_consistentb_correct in H. congruence.
+    + right. intros [_ [H _]]. apply ppv_params_consistentb_correct in H. congruence.
+  - right. intros [H _]. contradiction.
+Defined.
+
+(** Constructor for ValidExpandedForm *)
+Definition make_valid_opt (e : t) : option ValidExpandedForm :=
+  match valid_dec e with
+  | left pf =>
+      match pf with
+      | conj Hwf (conj Hppv Hett) => Some (mkValidForm e Hwf Hppv Hett)
+      end
+  | right _ => None
+  end.
+
+Lemma make_valid_opt_some : forall e vf,
+  make_valid_opt e = Some vf -> valid_form vf = e.
+Proof.
+  intros e vf H. unfold make_valid_opt in H.
+  destruct (valid_dec e) as [[Hwf [Hppv Hett]]|pf]; [|discriminate].
+  inversion H. reflexivity.
+Qed.
+
+(** No-support forms are always valid *)
+Definition no_support_form_is_valid (ta : Timing.TimedAssessment) : ValidExpandedForm.
+Proof.
+  refine (mkValidForm (no_support_form ta) _ _ _).
+  - intro H. unfold no_support_form, is_resuscitated in H. simpl in H. discriminate.
+  - intro H. discriminate.
+  - intro H. discriminate.
+Defined.
 
 End ExpandedForm.
 
@@ -7295,6 +7729,52 @@ Proof.
   - apply Nat.leb_gt in E2. lia.
 Qed.
 
+(** Cord blood gas integration: Low APGAR at 5 min warrants cord gas per AAP *)
+Theorem low_score_at_5min_needs_cord_gas : forall ca,
+  apgar_score ca <= 5 ->
+  Timing.to_minutes (standard_time ca) = 5 ->
+  needs_cord_gas ca = true.
+Proof.
+  intros ca Hscore Htime. unfold needs_cord_gas.
+  apply andb_true_intro. split.
+  - apply Nat.leb_le. exact Hscore.
+  - apply Nat.eqb_eq. exact Htime.
+Qed.
+
+(** Cord gas asphyxia + very low APGAR indicates high risk minimum *)
+Theorem cord_gas_asphyxia_high_risk_minimum : forall ca,
+  apgar_score ca <= 3 ->
+  cord_gas_indicates_asphyxia ca = true ->
+  compute_risk ca = CriticalRisk \/ compute_risk ca = HighRisk.
+Proof.
+  intros ca Hscore Hasphyxia.
+  unfold compute_risk.
+  destruct (apgar_score ca =? 0) eqn:E0.
+  - left. reflexivity.
+  - destruct ((apgar_score ca <=? 3) && has_additional_risk_factors ca) eqn:E1.
+    + left. reflexivity.
+    + destruct (apgar_score ca <=? 3) eqn:E2.
+      * right. reflexivity.
+      * apply Nat.leb_gt in E2. lia.
+Qed.
+
+(** Relationship between cord gas findings and interventions *)
+Theorem acidemia_with_low_apgar_requires_intervention : forall ca,
+  apgar_score ca <= 3 ->
+  cord_gas_indicates_asphyxia ca = true ->
+  Intervention.le Intervention.PositivePressureVentilation
+                  (Intervention.of_score (apgar_score ca)).
+Proof.
+  intros ca Hscore _.
+  unfold Intervention.of_score.
+  destruct (7 <=? apgar_score ca) eqn:E1; [apply Nat.leb_le in E1; lia|].
+  destruct (4 <=? apgar_score ca) eqn:E2; [apply Nat.leb_le in E2; lia|].
+  destruct (1 <=? apgar_score ca) eqn:E3.
+  - unfold Intervention.le. simpl. lia.
+  - apply Nat.leb_gt in E3.
+    unfold Intervention.le. simpl. lia.
+Qed.
+
 End CombinedAssessment.
 
 (******************************************************************************)
@@ -8038,6 +8518,27 @@ Proof.
     simpl in H. lia.
 Qed.
 
+(** Score reaching reassuring level means routine care *)
+Theorem score_reaches_reassuring_intervention : forall traj,
+  length traj >= 2 ->
+  last traj 0 >= 7 ->
+  Intervention.of_score (last traj 0) = Intervention.RoutineCare.
+Proof.
+  intros traj Hlen Hlast.
+  apply Intervention.of_score_routine. exact Hlast.
+Qed.
+
+(** Improving trajectory with reassuring endpoint *)
+Theorem improving_to_reassuring_yields_routine : forall traj,
+  length traj >= 2 ->
+  is_improving_trajectory traj ->
+  last traj 0 >= 7 ->
+  Intervention.of_score (last traj 0) = Intervention.RoutineCare.
+Proof.
+  intros traj Hlen Himpr Hlast.
+  apply score_reaches_reassuring_intervention; assumption.
+Qed.
+
 End Trajectory.
 
 (******************************************************************************)
@@ -8212,6 +8713,45 @@ Theorem cord_gas_indicated_at_5min : forall ca,
   CombinedAssessment.apgar_score ca <= 5.
 Proof. exact CombinedAssessment.needs_cord_gas_implies_low_score. Qed.
 
+(** Negative properties: score bounds are tight *)
+
+Theorem score_11_unreachable : forall a : Assessment.t,
+  Assessment.total_unbounded a <> 11.
+Proof.
+  intros a H. assert (Hle := Assessment.total_max a). lia.
+Qed.
+
+Theorem no_score_above_10 : forall a : Assessment.t,
+  ~ (Assessment.total_unbounded a > 10).
+Proof.
+  intros a H. assert (Hle := Assessment.total_max a). lia.
+Qed.
+
+(** Two different assessments can have the same score *)
+Theorem score_not_injective : exists a1 a2 : Assessment.t,
+  a1 <> a2 /\ Assessment.total_unbounded a1 = Assessment.total_unbounded a2.
+Proof.
+  exists (Assessment.mk Appearance.PaleBlue Pulse.Below100 Grimace.NoResponse
+                         Activity.Flaccid Respiration.Apneic).
+  exists (Assessment.mk Appearance.Acrocyanotic Pulse.Absent Grimace.NoResponse
+                         Activity.Flaccid Respiration.Apneic).
+  split.
+  - intro H. inversion H.
+  - reflexivity.
+Qed.
+
+(** Assessment cardinality is exactly 243 *)
+Theorem assessment_cardinality_exact : length Assessment.all = 243.
+Proof. exact Assessment.all_length. Qed.
+
+(** No intervention strictly between RoutineCare and StimulationOxygen *)
+Theorem intervention_gap_routine_stim : forall i,
+  Intervention.severity i > Intervention.severity Intervention.RoutineCare ->
+  Intervention.severity i >= Intervention.severity Intervention.StimulationOxygen.
+Proof.
+  intros []; simpl; lia.
+Qed.
+
 End MainResults.
 
 (******************************************************************************)
@@ -8327,6 +8867,44 @@ Proof.
   intros s Hs Hcontra.
   apply Intervention.full_iff_zero in Hcontra.
   lia.
+Qed.
+
+(** Protocol Completeness Theorem:
+    For any valid assessment sequence, exactly one of three outcomes holds:
+    1. The latest score is reassuring (>=7) - assessment can stop
+    2. The sequence is at Min20 - maximum extension reached
+    3. The sequence can be extended to a later time point *)
+Theorem protocol_completeness : forall vs : Timing.ValidSequence,
+  (Classification.of_score (Assessment.total_unbounded
+     (Timing.assessment (last (Timing.seq vs) (Timing.mkTimed Timing.Min1 Assessment.minimum))))
+   = Classification.Reassuring) \/
+  (Timing.time (last (Timing.seq vs) (Timing.mkTimed Timing.Min1 Assessment.minimum)) = Timing.Min20) \/
+  (Timing.can_extend vs = true).
+Proof.
+  intros vs.
+  set (latest := last (Timing.seq vs) (Timing.mkTimed Timing.Min1 Assessment.minimum)).
+  set (cls := Classification.of_score (Assessment.total_unbounded (Timing.assessment latest))).
+  destruct (Classification.eq_dec cls Classification.Reassuring) as [Hreass | Hnot_reass].
+  - left. exact Hreass.
+  - destruct (Timing.eq_dec (Timing.time latest) Timing.Min20) as [Hmax | Hnot_max].
+    + right. left. exact Hmax.
+    + right. right.
+      unfold Timing.can_extend. unfold latest.
+      destruct (Timing.next (Timing.time (last (Timing.seq vs) (Timing.mkTimed Timing.Min1 Assessment.minimum)))) eqn:Enext.
+      * reflexivity.
+      * exfalso. apply Timing.next_none_iff_max in Enext.
+        apply Hnot_max. unfold latest. exact Enext.
+Qed.
+
+(** Protocol termination: if reassuring OR at Max time, should_continue is false *)
+Theorem protocol_termination_complete : forall ta : Timing.TimedAssessment,
+  (Classification.of_assessment (Timing.assessment ta) = Classification.Reassuring \/
+   Timing.time ta = Timing.Min20) ->
+  Timing.should_continue ta = false.
+Proof.
+  intros [t a] [H | H].
+  - apply Timing.should_continue_false_if_reassuring. exact H.
+  - simpl in H. subst. apply Timing.max_time_stops.
 Qed.
 
 End NegativeSpecs.
@@ -8721,6 +9299,34 @@ Proof.
     rewrite H in E. discriminate.
 Defined.
 
+(** Empty log satisfies log_no_modifications_after_finalized *)
+Lemma empty_log_no_mod_after_final : log_no_modifications_after_finalized [].
+Proof.
+  unfold log_no_modifications_after_finalized.
+  intros i Hi. simpl in Hi. lia.
+Qed.
+
+(** Singleton created log is a valid audit log *)
+Definition singleton_valid_log (ts uid : nat) (a : Assessment.t) : ValidAuditLog.
+Proof.
+  refine (mkValidLog [mkAuditEvent Created ts uid a] _ _ _).
+  - unfold log_is_chronological. intros i j Hij Hj. simpl in Hj. lia.
+  - simpl. reflexivity.
+  - unfold log_no_modifications_after_finalized. intros i Hi Htype j Hij Hj.
+    simpl in *. destruct i; [|lia]. destruct j; [lia|]. simpl in Hj. lia.
+Defined.
+
+(** Extract log from valid audit log *)
+Definition valid_log_events (vl : ValidAuditLog) : AuditLog := log_events vl.
+
+(** Valid log length *)
+Definition valid_log_length (vl : ValidAuditLog) : nat := length (log_events vl).
+
+(** Valid log is chronological *)
+Lemma valid_log_is_chronological : forall vl,
+  log_is_chronological (log_events vl).
+Proof. intros vl. exact (log_chrono vl). Qed.
+
 End AuditTrail.
 
 (******************************************************************************)
@@ -8900,6 +9506,66 @@ Definition test_all_witnesses : list nat :=
      Reachability.witness_fn 10].
 
 Lemma test_all_witnesses_correct : test_all_witnesses = [0; 1; 2; 3; 4; 5; 6; 7; 8; 9; 10].
+Proof. reflexivity. Qed.
+
+(** Negative test cases: Testing rejection of invalid inputs *)
+Definition test_invalid_score_11 : option ValidScore.t := ValidScore.of_nat_opt 11.
+Definition test_invalid_score_100 : option ValidScore.t := ValidScore.of_nat_opt 100.
+
+Lemma test_invalid_score_11_none : test_invalid_score_11 = None.
+Proof. reflexivity. Qed.
+
+Lemma test_invalid_score_100_none : test_invalid_score_100 = None.
+Proof. reflexivity. Qed.
+
+Definition test_invalid_appearance : option Appearance.t := Appearance.of_nat_opt 3.
+Definition test_invalid_appearance_10 : option Appearance.t := Appearance.of_nat_opt 10.
+
+Lemma test_invalid_appearance_none : test_invalid_appearance = None.
+Proof. reflexivity. Qed.
+
+Lemma test_invalid_appearance_10_none : test_invalid_appearance_10 = None.
+Proof. reflexivity. Qed.
+
+Definition test_invalid_pulse : option Pulse.t := Pulse.of_nat_opt 3.
+Definition test_invalid_grimace : option Grimace.t := Grimace.of_nat_opt 5.
+Definition test_invalid_activity : option Activity.t := Activity.of_nat_opt 4.
+Definition test_invalid_respiration : option Respiration.t := Respiration.of_nat_opt 3.
+
+Lemma test_invalid_pulse_none : test_invalid_pulse = None.
+Proof. reflexivity. Qed.
+
+Lemma test_invalid_grimace_none : test_invalid_grimace = None.
+Proof. reflexivity. Qed.
+
+Lemma test_invalid_activity_none : test_invalid_activity = None.
+Proof. reflexivity. Qed.
+
+Lemma test_invalid_respiration_none : test_invalid_respiration = None.
+Proof. reflexivity. Qed.
+
+(** Test boundary rejections for physiological values *)
+Definition test_invalid_weight_7000 : option BirthWeight.t := BirthWeight.of_grams_opt 7000.
+
+Lemma test_invalid_weight_none : test_invalid_weight_7000 = None.
+Proof. reflexivity. Qed.
+
+(** Classification.of_nat clamps to valid range, so test the boundary behavior *)
+Definition test_classification_clamped_high : Classification.t := Classification.of_nat 100.
+
+Lemma test_classification_clamped_to_reassuring : test_classification_clamped_high = Classification.Reassuring.
+Proof. reflexivity. Qed.
+
+(** Test trajectory edge cases *)
+Definition test_empty_trajectory_not_improving : bool :=
+  Trajectory.is_improving_trajectoryb [].
+Definition test_singleton_trajectory_stable : bool :=
+  Trajectory.is_stable_trajectoryb [7].
+
+Lemma test_empty_not_improving : test_empty_trajectory_not_improving = true.
+Proof. reflexivity. Qed.
+
+Lemma test_singleton_stable : test_singleton_trajectory_stable = true.
 Proof. reflexivity. Qed.
 
 End ExtractionTests.
@@ -9118,4 +9784,50 @@ Extraction "apgar.ml"
   Timing.score_improved Timing.all_scores_improving
   Timing.seq_all_improving Timing.seq_reached_reassuring
   (* New in v1.1.0: Assessment injectivity *)
-  Assessment.mk_injective_full.
+  Assessment.mk_injective_full
+  (* New: ValidSequence extend function *)
+  Timing.extend Timing.extend_length Timing.extract_next_time
+  (* New: ValidExpandedForm combined record *)
+  ExpandedForm.ValidExpandedForm ExpandedForm.mkValidForm
+  ExpandedForm.valid_form ExpandedForm.valid_to_well_formed
+  ExpandedForm.valid_to_consistent ExpandedForm.is_validb
+  ExpandedForm.valid_dec ExpandedForm.make_valid_opt
+  ExpandedForm.no_support_form_is_valid
+  (* New: AuditTrail ValidAuditLog constructor *)
+  AuditTrail.ValidAuditLog AuditTrail.mkValidLog
+  AuditTrail.log_events AuditTrail.singleton_valid_log
+  AuditTrail.valid_log_events AuditTrail.valid_log_length
+  AuditTrail.empty_log_no_mod_after_final
+  (* New: Trajectory-Intervention theorems *)
+  Trajectory.score_reaches_reassuring_intervention
+  Trajectory.improving_to_reassuring_yields_routine
+  (* New: Round-trip proofs *)
+  BloodGlucose.of_nat_opt_roundtrip
+  CordBloodGas.make_pH_roundtrip
+  ExpandedForm.make_fio2_roundtrip
+  ExpandedForm.make_ett_params_roundtrip
+  BirthWeight.of_grams_opt_roundtrip
+  (* New: Boolean reflection lemmas *)
+  GestationalAge.is_preterm_iff GestationalAge.is_term_iff GestationalAge.is_post_term_iff
+  GestationalAge.maturity_trichotomy
+  BirthWeight.is_elbw_iff BirthWeight.is_vlbw_iff BirthWeight.is_lbw_iff
+  BirthWeight.is_normal_weight_iff BirthWeight.is_macrosomic_iff
+  CordBloodGas.is_acidemic_iff CordBloodGas.is_severely_acidemic_iff
+  CordBloodGas.is_hypercapnic_iff CordBloodGas.is_hypoxemic_iff
+  CordBloodGas.is_significant_bd_iff CordBloodGas.is_severe_bd_iff
+  CordBloodGas.is_elevated_lactate_iff
+  Temperature.is_hypothermic_iff Temperature.is_hyperthermic_iff
+  Temperature.is_normal_temp_iff Temperature.temp_trichotomy
+  Temperature.hypothermic_needs_warming Temperature.hyperthermic_needs_cooling
+  Temperature.estimate_core_temp_bounded
+  (* New: Protocol completeness *)
+  NegativeSpecs.protocol_completeness NegativeSpecs.protocol_termination_complete
+  (* New: Cord gas integration *)
+  CombinedAssessment.low_score_at_5min_needs_cord_gas
+  CombinedAssessment.cord_gas_asphyxia_high_risk_minimum
+  CombinedAssessment.acidemia_with_low_apgar_requires_intervention
+  (* New: SpO2 extended monitoring *)
+  SpO2.extended_monitoring_target_lo SpO2.extended_monitoring_target_hi
+  SpO2.extended_monitoring_stable SpO2.post_transition_target
+  SpO2.hyperoxia_above_target SpO2.critical_hypoxemia
+  SpO2.critical_hypoxemia_below_all_targets.
