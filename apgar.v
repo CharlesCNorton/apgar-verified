@@ -12,10 +12,7 @@
 
     - Author: Charles C. Norton
     - Date: December 2025
-    - Version: 1.1.0
-    - Coq Version: 8.19.2
-    - SPDX-License-Identifier: MIT
-    - Repository: https://github.com/CharlesCNorton/apgar-score-verified
+    - License: MIT
 *)
 
 (******************************************************************************)
