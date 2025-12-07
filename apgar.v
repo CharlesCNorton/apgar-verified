@@ -12,9 +12,10 @@
 
     - Author: Charles C. Norton
     - Date: December 2025
-    - Version: 1.0.0
+    - Version: 1.1.0
     - Coq Version: 8.19.2
-    - License: MIT
+    - SPDX-License-Identifier: MIT
+    - Repository: https://github.com/CharlesCNorton/apgar-score-verified
 *)
 
 (******************************************************************************)
@@ -24,7 +25,7 @@
 (*  [Apgar1953]                                                               *)
 (*     Apgar V. A proposal for a new method of evaluation of the newborn      *)
 (*     infant. Curr Res Anesth Analg. 1953;32(4):260-267.                     *)
-(*     PMID: 13083014                                                         *)
+(*     PMID: 13083014. doi:10.1213/00000539-195301000-00041                   *)
 (*                                                                            *)
 (*  [AAP2015]                                                                 *)
 (*     American Academy of Pediatrics Committee on Fetus and Newborn,         *)
@@ -35,10 +36,12 @@
 (*  [ACOG2015]                                                                *)
 (*     ACOG Committee Opinion No. 644: The Apgar Score.                       *)
 (*     Obstet Gynecol. 2015;126(4):e52-e55.                                   *)
+(*     doi:10.1097/AOG.0000000000001108                                       *)
 (*                                                                            *)
 (*  [NRP2021]                                                                 *)
 (*     Neonatal Resuscitation Program, 8th Edition.                           *)
 (*     American Academy of Pediatrics, 2021.                                  *)
+(*     ISBN: 978-1-61002-494-9                                                *)
 (*                                                                            *)
 (*  [StatPearls2024]                                                          *)
 (*     Simon LV, Hashmi MF, Bragg BN. APGAR Score.                            *)
@@ -109,6 +112,61 @@ Require Import Coq.ZArith.ZArith.
 Require Import Lia.
 Require Import Program.
 Import ListNotations.
+
+(******************************************************************************)
+(*                                                                            *)
+(*                    MODULE TYPE SIGNATURES                                  *)
+(*                                                                            *)
+(*  Abstract interfaces for key types. These enable substitution for testing  *)
+(*  and ensure consistent structure across component modules.                 *)
+(*                                                                            *)
+(******************************************************************************)
+
+(** Signature for enumerated APGAR component types *)
+Module Type APGAR_COMPONENT.
+  Parameter t : Type.
+  Parameter to_nat : t -> nat.
+  Parameter of_nat : nat -> t.
+  Parameter of_nat_opt : nat -> option t.
+  Parameter eq_dec : forall x y : t, {x = y} + {x <> y}.
+  Parameter all : list t.
+
+  Axiom to_nat_bound : forall x : t, to_nat x <= 2.
+  Axiom all_complete : forall x : t, In x all.
+  Axiom all_nodup : NoDup all.
+  Axiom of_nat_to_nat : forall x : t, of_nat (to_nat x) = x.
+  Axiom to_nat_of_nat : forall n : nat, n <= 2 -> to_nat (of_nat n) = n.
+End APGAR_COMPONENT.
+
+(** Signature for classification/intervention types with ordering *)
+Module Type ORDERED_CLASSIFICATION.
+  Parameter t : Type.
+  Parameter of_score : nat -> t.
+  Parameter to_nat : t -> nat.
+  Parameter eq_dec : forall x y : t, {x = y} + {x <> y}.
+  Parameter all : list t.
+  Parameter le : t -> t -> Prop.
+  Parameter lt : t -> t -> Prop.
+
+  Axiom all_complete : forall x : t, In x all.
+  Axiom all_nodup : NoDup all.
+  Axiom le_refl : forall x, le x x.
+  Axiom le_trans : forall x y z, le x y -> le y z -> le x z.
+  Axiom le_antisym : forall x y, le x y -> le y x -> x = y.
+End ORDERED_CLASSIFICATION.
+
+(** Signature for bounded numeric types *)
+Module Type BOUNDED_VALUE.
+  Parameter t : Type.
+  Parameter val : t -> nat.
+  Parameter bound : nat.
+  Parameter of_nat_opt : nat -> option t.
+  Parameter eq_dec : forall x y : t, {x = y} + {x <> y}.
+
+  Axiom val_bound : forall x : t, val x <= bound.
+  Axiom of_nat_opt_some : forall n x, of_nat_opt n = Some x -> val x = n.
+  Axiom of_nat_opt_none : forall n, n > bound -> of_nat_opt n = None.
+End BOUNDED_VALUE.
 
 (******************************************************************************)
 (*                                                                            *)
@@ -266,6 +324,67 @@ Proof.
       * left. right. exact Hin.
       * right. intro H. destruct H as [H|H]; [symmetry in H; contradiction | contradiction].
 Defined.
+
+(** Additional automation tactics for common proof patterns *)
+
+(** Tactic for proving decidable equality by case analysis *)
+Ltac prove_eq_dec :=
+  intros [] []; (left; reflexivity) || (right; discriminate).
+
+(** Tactic for proving record injectivity *)
+Ltac prove_record_injective :=
+  intros; match goal with
+  | [ H : _ = _ |- _ ] => inversion H; subst; reflexivity
+  end.
+
+(** Tactic for boolean reflection proofs - forward direction *)
+Ltac bool_destruct H :=
+  repeat (apply andb_true_iff in H; destruct H as [? H] ||
+          apply Nat.eqb_eq in H || apply Nat.leb_le in H || apply Nat.ltb_lt in H).
+
+(** Tactic for boolean reflection proofs - backward direction *)
+Ltac bool_construct :=
+  repeat (apply andb_true_intro; split);
+  try apply Nat.eqb_eq; try apply Nat.leb_le; try apply Nat.ltb_lt;
+  try assumption; try lia.
+
+(** Tactic for case exhaustion in finite types *)
+Ltac exhaust_cases x :=
+  destruct x; try reflexivity; try discriminate; try lia.
+
+(** Tactic for solving trichotomy goals *)
+Ltac solve_trichotomy :=
+  intros [] [];
+  try (left; reflexivity);
+  try (right; left; unfold lt; simpl; lia);
+  try (right; right; unfold lt; simpl; lia).
+
+(** Helper for proving ordering properties - use with local le definitions *)
+Ltac prove_ordering_refl le_def :=
+  unfold le_def; intros; lia.
+
+Ltac prove_ordering_trans le_def :=
+  unfold le_def; intros; lia.
+
+Ltac prove_ordering_antisym le_def :=
+  unfold le_def; intros [] [] H1 H2; try reflexivity; simpl in *; lia.
+
+(** Helper for last element proofs *)
+Lemma last_cons_ne : forall {A : Type} (a : A) (l : list A) (d : A),
+  l <> [] -> last (a :: l) d = last l d.
+Proof.
+  intros A a l d Hne. destruct l; [contradiction | reflexivity].
+Qed.
+
+Lemma last_singleton : forall {A : Type} (a d : A),
+  last [a] d = a.
+Proof. reflexivity. Qed.
+
+Lemma last_app_singleton : forall {A : Type} (l : list A) (a d : A),
+  last (l ++ [a]) d = a.
+Proof.
+  intros A l a d. rewrite last_last. reflexivity.
+Qed.
 
 End ListHelpers.
 
@@ -1393,6 +1512,90 @@ Proof. reflexivity. Qed.
 Lemma sample_acidemic_is_acidemic : is_acidemic sample_acidemic_ph = true.
 Proof. reflexivity. Qed.
 
+(** Sample type: Arterial vs Venous cord blood *)
+Inductive SampleType : Type :=
+  | Arterial : SampleType
+  | Venous : SampleType.
+
+Definition sample_type_eq_dec : forall s1 s2 : SampleType, {s1 = s2} + {s1 <> s2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition sample_type_all : list SampleType := [Arterial; Venous].
+
+Lemma sample_type_all_complete : forall s : SampleType, In s sample_type_all.
+Proof. intros []; simpl; auto. Qed.
+
+Lemma sample_type_all_nodup : NoDup sample_type_all.
+Proof. repeat constructor; simpl; intuition discriminate. Qed.
+
+(** Typed cord blood gas with sample source *)
+Record TypedSample : Type := mkTypedSample {
+  sample_source : SampleType;
+  sample_gas : t
+}.
+
+(** Paired arterial-venous samples *)
+Record PairedSamples : Type := mkPaired {
+  arterial_sample : t;
+  venous_sample : t
+}.
+
+(** A-V pH difference (x100) - normal is 0.02-0.10 (2-10 when x100) *)
+Definition av_ph_difference (p : PairedSamples) : nat :=
+  let art_ph := ph_value_x100 (ph (arterial_sample p)) in
+  let ven_ph := ph_value_x100 (ph (venous_sample p)) in
+  if ven_ph <=? art_ph then 0 else ven_ph - art_ph.
+
+Definition normal_av_difference_min : nat := 2.
+Definition normal_av_difference_max : nat := 10.
+
+Definition is_normal_av_difference (p : PairedSamples) : bool :=
+  let diff := av_ph_difference p in
+  (normal_av_difference_min <=? diff) && (diff <=? normal_av_difference_max).
+
+(** A-V difference too small suggests cord occlusion or sampling error *)
+Definition av_difference_too_small (p : PairedSamples) : bool :=
+  av_ph_difference p <? normal_av_difference_min.
+
+(** A-V difference too large suggests prolonged cord compression *)
+Definition av_difference_too_large (p : PairedSamples) : bool :=
+  normal_av_difference_max <? av_ph_difference p.
+
+(** Arterial pH is typically lower than venous (fetus returns CO2 to placenta) *)
+Theorem arterial_typically_lower : forall p,
+  is_normal_av_difference p = true ->
+  ph_value_x100 (ph (arterial_sample p)) < ph_value_x100 (ph (venous_sample p)).
+Proof.
+  intros p H. unfold is_normal_av_difference in H.
+  apply andb_true_iff in H. destruct H as [H1 H2].
+  apply Nat.leb_le in H1.
+  unfold av_ph_difference, normal_av_difference_min in H1.
+  destruct (ph_value_x100 (ph (venous_sample p)) <=?
+            ph_value_x100 (ph (arterial_sample p))) eqn:E.
+  - apply Nat.leb_le in E. simpl in H1. lia.
+  - apply Nat.leb_gt in E. exact E.
+Qed.
+
+(** Combined asphyxia indicator using both samples *)
+Definition paired_indicates_asphyxia (p : PairedSamples) : bool :=
+  indicates_asphyxia (arterial_sample p).
+
+(** Asphyxia from arterial implies arterial acidemia *)
+Theorem paired_asphyxia_arterial_acidemic : forall p,
+  paired_indicates_asphyxia p = true ->
+  is_acidemic (ph (arterial_sample p)) = true.
+Proof.
+  intros p H. apply asphyxia_requires_acidemia. exact H.
+Qed.
+
+(** Venous-only sampling is less reliable for asphyxia detection *)
+Definition venous_only_asphyxia (ts : TypedSample) : bool :=
+  match sample_source ts with
+  | Arterial => indicates_asphyxia (sample_gas ts)
+  | Venous => is_severely_acidemic (ph (sample_gas ts)) &&
+              is_severe_bd (base_deficit (sample_gas ts))
+  end.
+
 End CordBloodGas.
 
 (******************************************************************************)
@@ -1510,6 +1713,68 @@ Qed.
 Definition needs_warming (temp : t) : bool := is_hypothermic temp.
 
 Definition needs_cooling (temp : t) : bool := is_hyperthermic temp.
+
+(** Measurement site for temperature *)
+Inductive MeasurementSite : Type :=
+  | Axillary : MeasurementSite
+  | Rectal : MeasurementSite
+  | SkinProbe : MeasurementSite
+  | Esophageal : MeasurementSite.
+
+Definition measurement_site_eq_dec : forall s1 s2 : MeasurementSite,
+  {s1 = s2} + {s1 <> s2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition measurement_site_all : list MeasurementSite :=
+  [Axillary; Rectal; SkinProbe; Esophageal].
+
+Lemma measurement_site_all_complete : forall s : MeasurementSite,
+  In s measurement_site_all.
+Proof. intros []; simpl; auto. Qed.
+
+(** Offset to adjust for measurement site (x10, e.g., 5 = 0.5°C) *)
+Definition site_offset_x10 (s : MeasurementSite) : nat :=
+  match s with
+  | Axillary => 5
+  | Rectal => 0
+  | SkinProbe => 3
+  | Esophageal => 0
+  end.
+
+(** Is site considered gold standard for neonatal monitoring *)
+Definition is_core_temperature_site (s : MeasurementSite) : bool :=
+  match s with
+  | Rectal => true
+  | Esophageal => true
+  | _ => false
+  end.
+
+(** Temperature reading with site information *)
+Record SitedTemperature : Type := mkSitedTemp {
+  temp_reading : t;
+  temp_site : MeasurementSite
+}.
+
+(** Estimate core temperature from peripheral reading *)
+Definition estimate_core_temp (st : SitedTemperature) : nat :=
+  value_x10 (temp_reading st) + site_offset_x10 (temp_site st).
+
+(** Clinical interpretation should use estimated core *)
+Definition classify_sited (st : SitedTemperature) : Status :=
+  let core_est := estimate_core_temp st in
+  if core_est <? severe_hypothermia_x10 then SevereHypothermia
+  else if core_est <? moderate_hypothermia_x10 then ModerateHypothermia
+  else if core_est <? mild_hypothermia_x10 then MildHypothermia
+  else if core_est <=? normal_hi_x10 then Normal
+  else Hyperthermia.
+
+Theorem rectal_no_adjustment : forall temp,
+  estimate_core_temp (mkSitedTemp temp Rectal) = value_x10 temp.
+Proof. intros temp. unfold estimate_core_temp, site_offset_x10. simpl. lia. Qed.
+
+Theorem axillary_adds_offset : forall temp,
+  estimate_core_temp (mkSitedTemp temp Axillary) = value_x10 temp + 5.
+Proof. intros temp. reflexivity. Qed.
 
 End Temperature.
 
@@ -3290,6 +3555,34 @@ Proof.
   destruct (diff_respiration (diff a1 a2)); simpl; lia.
 Qed.
 
+(** Injectivity of the mk constructor - full decomposition *)
+Theorem mk_injective_full : forall ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2,
+  mk ap1 pu1 gr1 ac1 re1 = mk ap2 pu2 gr2 ac2 re2 ->
+  ap1 = ap2 /\ pu1 = pu2 /\ gr1 = gr2 /\ ac1 = ac2 /\ re1 = re2.
+Proof.
+  intros. inversion H. repeat split; reflexivity.
+Qed.
+
+Theorem mk_injective_appearance : forall ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2,
+  mk ap1 pu1 gr1 ac1 re1 = mk ap2 pu2 gr2 ac2 re2 -> ap1 = ap2.
+Proof. intros. inversion H. reflexivity. Qed.
+
+Theorem mk_injective_pulse : forall ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2,
+  mk ap1 pu1 gr1 ac1 re1 = mk ap2 pu2 gr2 ac2 re2 -> pu1 = pu2.
+Proof. intros. inversion H. reflexivity. Qed.
+
+Theorem mk_injective_grimace : forall ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2,
+  mk ap1 pu1 gr1 ac1 re1 = mk ap2 pu2 gr2 ac2 re2 -> gr1 = gr2.
+Proof. intros. inversion H. reflexivity. Qed.
+
+Theorem mk_injective_activity : forall ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2,
+  mk ap1 pu1 gr1 ac1 re1 = mk ap2 pu2 gr2 ac2 re2 -> ac1 = ac2.
+Proof. intros. inversion H. reflexivity. Qed.
+
+Theorem mk_injective_respiration : forall ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2,
+  mk ap1 pu1 gr1 ac1 re1 = mk ap2 pu2 gr2 ac2 re2 -> re1 = re2.
+Proof. intros. inversion H. reflexivity. Qed.
+
 End Assessment.
 
 (******************************************************************************)
@@ -3636,6 +3929,45 @@ Proof.
   intros [] [] H1 H2; unfold le, to_nat in *; try reflexivity; lia.
 Qed.
 
+(** Trichotomy: any two classifications are comparable *)
+Theorem trichotomy : forall c1 c2 : t,
+  c1 = c2 \/ c1 <=c c2 \/ c2 <=c c1.
+Proof.
+  intros [] []; unfold le, to_nat;
+  try (left; reflexivity);
+  try (right; left; lia);
+  try (right; right; lia).
+Qed.
+
+(** Strict ordering for classification *)
+Definition lt (c1 c2 : t) : Prop := to_nat c1 < to_nat c2.
+
+Notation "c1 <c c2" := (lt c1 c2) (at level 70).
+
+Theorem strict_trichotomy : forall c1 c2 : t,
+  c1 = c2 \/ c1 <c c2 \/ c2 <c c1.
+Proof.
+  intros [] []; unfold lt, to_nat;
+  try (left; reflexivity);
+  try (right; left; lia);
+  try (right; right; lia).
+Qed.
+
+Theorem lt_irrefl : forall c, ~ (c <c c).
+Proof. intros c H. unfold lt in H. lia. Qed.
+
+Theorem lt_trans : forall c1 c2 c3, c1 <c c2 -> c2 <c c3 -> c1 <c c3.
+Proof. intros c1 c2 c3 H1 H2. unfold lt in *. lia. Qed.
+
+Theorem lt_le_incl : forall c1 c2, c1 <c c2 -> c1 <=c c2.
+Proof. intros c1 c2 H. unfold lt, le in *. lia. Qed.
+
+Theorem lt_le_trans : forall c1 c2 c3, c1 <c c2 -> c2 <=c c3 -> c1 <c c3.
+Proof. intros c1 c2 c3 H1 H2. unfold lt, le in *. lia. Qed.
+
+Theorem le_lt_trans : forall c1 c2 c3, c1 <=c c2 -> c2 <c c3 -> c1 <c c3.
+Proof. intros c1 c2 c3 H1 H2. unfold lt, le in *. lia. Qed.
+
 (** Classification injectivity on ranges: equal classifications imply same score bracket *)
 Theorem of_score_same_class_same_bracket : forall s1 s2,
   of_score s1 = of_score s2 ->
@@ -3848,6 +4180,119 @@ Proof.
   - intros n Hn. apply low_iff. lia.
   - intros n [Hlo Hhi]. apply moderate_iff. lia.
   - intros n Hn. apply reassuring_iff. lia.
+Qed.
+
+(******************************************************************************)
+(*  PRETERM-ADJUSTED CLASSIFICATION                                           *)
+(*                                                                            *)
+(*  Preterm neonates have different baseline expectations for vitality signs. *)
+(*  This section provides adjusted classification that accounts for           *)
+(*  gestational age. [AAP2015] notes that APGAR may be affected by GA.        *)
+(******************************************************************************)
+
+(** Adjustment factor based on gestational age *)
+Definition preterm_adjustment (ga_weeks : nat) : nat :=
+  if ga_weeks <? 28 then 2        (** Extreme preterm: +2 adjustment *)
+  else if ga_weeks <? 32 then 1   (** Very preterm: +1 adjustment *)
+  else 0.                         (** Moderate preterm or term: no adjustment *)
+
+(** Adjusted score for classification purposes *)
+Definition adjusted_score (raw_score ga_weeks : nat) : nat :=
+  raw_score + preterm_adjustment ga_weeks.
+
+(** Adjusted classification using maturity-compensated score *)
+Definition of_score_preterm_adjusted (raw_score ga_weeks : nat) : t :=
+  of_score (Nat.min (adjusted_score raw_score ga_weeks) 10).
+
+(** Preterm context record *)
+Record PretermContext : Type := mkPretermContext {
+  ctx_ga_weeks : nat;
+  ctx_raw_score : nat;
+  ctx_raw_bound : ctx_raw_score <= 10
+}.
+
+Definition adjusted_classification (ctx : PretermContext) : t :=
+  of_score_preterm_adjusted (ctx_raw_score ctx) (ctx_ga_weeks ctx).
+
+(** Extreme preterm (<28 weeks) gets most lenient interpretation *)
+Lemma extreme_preterm_adjustment : forall ga,
+  ga < 28 -> preterm_adjustment ga = 2.
+Proof.
+  intros ga Hga. unfold preterm_adjustment.
+  destruct (ga <? 28) eqn:E.
+  - reflexivity.
+  - apply Nat.ltb_ge in E. lia.
+Qed.
+
+(** Very preterm (28-31 weeks) gets moderate adjustment *)
+Lemma very_preterm_adjustment : forall ga,
+  28 <= ga < 32 -> preterm_adjustment ga = 1.
+Proof.
+  intros ga [Hlo Hhi]. unfold preterm_adjustment.
+  destruct (ga <? 28) eqn:E1.
+  - apply Nat.ltb_lt in E1. lia.
+  - destruct (ga <? 32) eqn:E2.
+    + reflexivity.
+    + apply Nat.ltb_ge in E2. lia.
+Qed.
+
+(** Term neonates get no adjustment *)
+Lemma term_no_adjustment : forall ga,
+  ga >= 32 -> preterm_adjustment ga = 0.
+Proof.
+  intros ga Hga. unfold preterm_adjustment.
+  destruct (ga <? 28) eqn:E1.
+  - apply Nat.ltb_lt in E1. lia.
+  - destruct (ga <? 32) eqn:E2.
+    + apply Nat.ltb_lt in E2. lia.
+    + reflexivity.
+Qed.
+
+(** Adjustment never exceeds 2 *)
+Lemma preterm_adjustment_bound : forall ga,
+  preterm_adjustment ga <= 2.
+Proof.
+  intros ga. unfold preterm_adjustment.
+  destruct (ga <? 28); [lia|].
+  destruct (ga <? 32); lia.
+Qed.
+
+(** Adjusted score never exceeds 12 (but we cap at 10) *)
+Lemma adjusted_score_raw_bound : forall raw_score ga,
+  raw_score <= 10 -> adjusted_score raw_score ga <= 12.
+Proof.
+  intros raw_score ga Hraw. unfold adjusted_score.
+  pose proof (preterm_adjustment_bound ga). lia.
+Qed.
+
+(** Adjusted score is at least raw score *)
+Lemma adjusted_score_ge_raw : forall raw_score ga,
+  raw_score <= adjusted_score raw_score ga.
+Proof.
+  intros raw_score ga. unfold adjusted_score.
+  pose proof (preterm_adjustment_bound ga). lia.
+Qed.
+
+(** Adjusted effective score (capped) is at least raw when raw <= 10 *)
+Lemma adjusted_effective_ge_raw : forall raw_score ga,
+  raw_score <= 10 ->
+  raw_score <= Nat.min (adjusted_score raw_score ga) 10.
+Proof.
+  intros raw_score ga Hraw. unfold adjusted_score.
+  pose proof (preterm_adjustment_bound ga).
+  apply Nat.min_glb; lia.
+Qed.
+
+(** Term neonate: adjusted = raw *)
+Theorem term_adjusted_equals_raw : forall raw_score,
+  raw_score <= 10 ->
+  of_score_preterm_adjusted raw_score 37 = of_score raw_score.
+Proof.
+  intros raw_score Hraw.
+  unfold of_score_preterm_adjusted, adjusted_score.
+  rewrite term_no_adjustment by lia.
+  simpl. rewrite Nat.add_0_r.
+  rewrite Nat.min_l by lia. reflexivity.
 Qed.
 
 End Classification.
@@ -4308,6 +4753,39 @@ Proof.
   intros [|[|[|[|n]]]] [|[|[|[|m]]]] Hn Hm H; try reflexivity; try discriminate; try lia.
 Qed.
 
+(** Trichotomy: any two interventions are comparable *)
+Theorem trichotomy : forall i1 i2 : t,
+  i1 = i2 \/ i1 <=i i2 \/ i2 <=i i1.
+Proof.
+  intros [] []; unfold le, severity;
+  try (left; reflexivity);
+  try (right; left; lia);
+  try (right; right; lia).
+Qed.
+
+(** Strict trichotomy with lt *)
+Definition lt (i1 i2 : t) : Prop := severity i1 < severity i2.
+
+Notation "i1 <i i2" := (lt i1 i2) (at level 70).
+
+Theorem strict_trichotomy : forall i1 i2 : t,
+  i1 = i2 \/ i1 <i i2 \/ i2 <i i1.
+Proof.
+  intros [] []; unfold lt, severity;
+  try (left; reflexivity);
+  try (right; left; lia);
+  try (right; right; lia).
+Qed.
+
+Theorem lt_irrefl : forall i, ~ (i <i i).
+Proof. intros i H. unfold lt in H. lia. Qed.
+
+Theorem lt_trans : forall i1 i2 i3, i1 <i i2 -> i2 <i i3 -> i1 <i i3.
+Proof. intros i1 i2 i3 H1 H2. unfold lt in *. lia. Qed.
+
+Theorem lt_le_incl : forall i1 i2, i1 <i i2 -> i1 <=i i2.
+Proof. intros i1 i2 H. unfold lt, le in *. lia. Qed.
+
 End Intervention.
 
 (******************************************************************************)
@@ -4368,6 +4846,109 @@ Definition standard_window : nat := 30.
 
 Definition is_standard_timing (ts : Timestamp) (t : Time) : bool :=
   is_within_window ts t standard_window.
+
+(** Timing tolerance configuration *)
+Definition clinical_tolerance_secs : nat := 30.
+Definition strict_tolerance_secs : nat := 10.
+Definition lenient_tolerance_secs : nat := 60.
+
+(** Tolerance levels for timing assessment *)
+Inductive ToleranceLevel : Type :=
+  | StrictTolerance : ToleranceLevel
+  | ClinicalTolerance : ToleranceLevel
+  | LenientTolerance : ToleranceLevel.
+
+Definition tolerance_level_eq_dec : forall t1 t2 : ToleranceLevel,
+  {t1 = t2} + {t1 <> t2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition tolerance_to_secs (tol : ToleranceLevel) : nat :=
+  match tol with
+  | StrictTolerance => strict_tolerance_secs
+  | ClinicalTolerance => clinical_tolerance_secs
+  | LenientTolerance => lenient_tolerance_secs
+  end.
+
+Definition is_within_tolerance (ts : Timestamp) (t : Time) (tol : ToleranceLevel) : bool :=
+  is_within_window ts t (tolerance_to_secs tol).
+
+(** Clinical tolerance is standard *)
+Lemma clinical_tolerance_is_standard : forall ts t,
+  is_within_tolerance ts t ClinicalTolerance = is_standard_timing ts t.
+Proof. intros ts t. reflexivity. Qed.
+
+(** Strict tolerance implies clinical tolerance *)
+Lemma strict_implies_clinical : forall ts t,
+  is_within_tolerance ts t StrictTolerance = true ->
+  is_within_tolerance ts t ClinicalTolerance = true.
+Proof.
+  intros ts t H.
+  unfold is_within_tolerance, is_within_window, tolerance_to_secs,
+         strict_tolerance_secs, clinical_tolerance_secs in *.
+  apply andb_true_iff in H. destruct H as [H1 H2].
+  apply andb_true_intro. split.
+  - apply Nat.leb_le in H1. apply Nat.leb_le. lia.
+  - apply Nat.leb_le in H2. apply Nat.leb_le. lia.
+Qed.
+
+(** Clinical tolerance implies lenient tolerance *)
+Lemma clinical_implies_lenient : forall ts t,
+  is_within_tolerance ts t ClinicalTolerance = true ->
+  is_within_tolerance ts t LenientTolerance = true.
+Proof.
+  intros ts t H.
+  unfold is_within_tolerance, is_within_window, tolerance_to_secs,
+         clinical_tolerance_secs, lenient_tolerance_secs in *.
+  apply andb_true_iff in H. destruct H as [H1 H2].
+  apply andb_true_intro. split.
+  - apply Nat.leb_le in H1. apply Nat.leb_le. lia.
+  - apply Nat.leb_le in H2. apply Nat.leb_le. lia.
+Qed.
+
+(** Exact timing always satisfies any tolerance *)
+Lemma exact_timing_satisfies_tolerance : forall ts t tol,
+  seconds_since_birth ts = to_seconds t ->
+  is_within_tolerance ts t tol = true.
+Proof.
+  intros ts t tol Hexact.
+  unfold is_within_tolerance, is_within_window.
+  rewrite Hexact. apply andb_true_intro. split; apply Nat.leb_le; lia.
+Qed.
+
+(** Deviation measurement *)
+Definition timing_deviation (ts : Timestamp) (t : Time) : nat :=
+  let target := to_seconds t in
+  let actual := seconds_since_birth ts in
+  if actual <=? target then target - actual else actual - target.
+
+Definition timing_deviation_signed (ts : Timestamp) (t : Time) : Z :=
+  Z.of_nat (seconds_since_birth ts) - Z.of_nat (to_seconds t).
+
+Lemma timing_deviation_zero_iff_exact : forall ts t,
+  timing_deviation ts t = 0 <-> seconds_since_birth ts = to_seconds t.
+Proof.
+  intros ts t. unfold timing_deviation.
+  destruct (seconds_since_birth ts <=? to_seconds t) eqn:E.
+  - apply Nat.leb_le in E. split; intro H; lia.
+  - apply Nat.leb_gt in E. split; intro H; lia.
+Qed.
+
+(** Tolerance check from deviation *)
+Definition deviation_within_tolerance (dev : nat) (tol : ToleranceLevel) : bool :=
+  dev <=? tolerance_to_secs tol.
+
+Lemma deviation_tolerance_correct : forall ts t tol,
+  deviation_within_tolerance (timing_deviation ts t) tol = true <->
+  is_within_tolerance ts t tol = true.
+Proof.
+  intros ts t tol. unfold deviation_within_tolerance, is_within_tolerance,
+    is_within_window, timing_deviation.
+  destruct (seconds_since_birth ts <=? to_seconds t) eqn:E.
+  - apply Nat.leb_le in E. rewrite andb_true_iff.
+    repeat rewrite Nat.leb_le. split; intro H; lia.
+  - apply Nat.leb_gt in E. rewrite andb_true_iff.
+    repeat rewrite Nat.leb_le. split; intro H; lia.
+Qed.
 
 Lemma timestamp_30_is_min1 : forall ts,
   seconds_since_birth ts = 60 ->
@@ -4737,6 +5318,27 @@ Proof.
   - intros [next_t H]. rewrite H. reflexivity.
 Qed.
 
+(** Extension is possible iff can_extend returns true *)
+Theorem extend_possible_via_can_extend : forall vs (new_a : Assessment.t),
+  can_extend vs = true ->
+  exists new_seq,
+    length new_seq = S (length (seq vs)) /\
+    (forall i, i < length (seq vs) ->
+      nth i new_seq (mkTimed Min1 Assessment.minimum) =
+      nth i (seq vs) (mkTimed Min1 Assessment.minimum)) /\
+    assessment (last new_seq (mkTimed Min1 Assessment.minimum)) = new_a.
+Proof.
+  intros vs new_a Hext.
+  unfold can_extend in Hext.
+  destruct (next (time (last (seq vs) (mkTimed Min1 Assessment.minimum)))) as [next_t|] eqn:E;
+    [|discriminate].
+  exists (seq vs ++ [mkTimed next_t new_a]).
+  repeat split.
+  - rewrite app_length. simpl. lia.
+  - intros i Hi. apply app_nth1. exact Hi.
+  - rewrite last_last. reflexivity.
+Qed.
+
 Definition mk_valid_seq_2 (a1 a2 : Assessment.t) : ValidSequence.
 Proof.
   refine (mkValidSeq [mkTimed Min1 a1; mkTimed Min5 a2] _ _ _).
@@ -4958,7 +5560,335 @@ Theorem workflow_demonstration :
   should_continue example_timed_10 = false.
 Proof. repeat split; reflexivity. Qed.
 
+(******************************************************************************)
+(*  VALIDSEQUENCE HELPER FUNCTIONS                                            *)
+(*                                                                            *)
+(*  Accessor functions for working with valid sequences.                      *)
+(******************************************************************************)
+
+(** Sequence last assessment accessor *)
+Definition seq_last_assessment (vs : ValidSequence) : Assessment.t :=
+  assessment (last (seq vs) (mkTimed Min1 Assessment.minimum)).
+
+(** Sequence last time accessor *)
+Definition seq_last_time (vs : ValidSequence) : Time :=
+  time (last (seq vs) (mkTimed Min1 Assessment.minimum)).
+
+(** Get all assessments from sequence *)
+Definition seq_assessments (vs : ValidSequence) : list Assessment.t :=
+  map assessment (seq vs).
+
+Lemma seq_assessments_length : forall vs,
+  length (seq_assessments vs) = valid_seq_length vs.
+Proof.
+  intros vs. unfold seq_assessments, valid_seq_length. apply map_length.
+Qed.
+
+(** Get all scores from sequence *)
+Definition seq_scores (vs : ValidSequence) : list nat :=
+  map (fun ta => Assessment.total_unbounded (assessment ta)) (seq vs).
+
+Lemma seq_scores_length : forall vs,
+  length (seq_scores vs) = valid_seq_length vs.
+Proof.
+  intros vs. unfold seq_scores, valid_seq_length. apply map_length.
+Qed.
+
+(** Get first assessment *)
+Definition seq_first_assessment (vs : ValidSequence) : Assessment.t :=
+  match seq vs with
+  | [] => Assessment.minimum  (* Never happens due to seq_nonempty *)
+  | ta :: _ => assessment ta
+  end.
+
+(** Score at position i *)
+Definition score_at (vs : ValidSequence) (i : nat) : nat :=
+  Assessment.total_unbounded (assessment (nth i (seq vs) (mkTimed Min1 Assessment.minimum))).
+
+(** Classification at position i *)
+Definition classification_at (vs : ValidSequence) (i : nat) : Classification.t :=
+  Classification.of_score (score_at vs i).
+
+(** Score improved from position i to j? *)
+Definition score_improved (vs : ValidSequence) (i j : nat) : bool :=
+  score_at vs i <? score_at vs j.
+
+(** All scores improving through sequence? *)
+Fixpoint all_scores_improving (scores : list nat) : bool :=
+  match scores with
+  | [] => true
+  | [_] => true
+  | s1 :: ((s2 :: _) as rest) => (s1 <? s2) && all_scores_improving rest
+  end.
+
+Definition seq_all_improving (vs : ValidSequence) : bool :=
+  all_scores_improving (seq_scores vs).
+
+(** Final classification reached reassuring? *)
+Definition seq_reached_reassuring (vs : ValidSequence) : bool :=
+  match Classification.eq_dec (Classification.of_score (Assessment.total_unbounded (seq_last_assessment vs))) Classification.Reassuring with
+  | left _ => true
+  | right _ => false
+  end.
+
 End Timing.
+
+(******************************************************************************)
+(*                                                                            *)
+(*                    SECTION 8b: CORD CLAMPING                               *)
+(*                                                                            *)
+(*  Cord clamping timing affects neonatal outcomes. Delayed cord clamping     *)
+(*  (DCC) is recommended for term and preterm neonates. [NRP2021]             *)
+(*                                                                            *)
+(******************************************************************************)
+
+Module CordClamping.
+
+(** Cord clamping timing categories *)
+Inductive ClampingTiming : Type :=
+  | ImmediateClamping : ClampingTiming      (** < 30 seconds *)
+  | DelayedClamping : ClampingTiming        (** 30-60 seconds - recommended *)
+  | ExtendedDelayed : ClampingTiming        (** > 60 seconds *)
+  | UmbilicalCordMilking : ClampingTiming.  (** Alternative when DCC not possible *)
+
+Definition clamping_timing_eq_dec : forall c1 c2 : ClampingTiming,
+  {c1 = c2} + {c1 <> c2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition clamping_timing_all : list ClampingTiming :=
+  [ImmediateClamping; DelayedClamping; ExtendedDelayed; UmbilicalCordMilking].
+
+Lemma clamping_timing_all_complete : forall c : ClampingTiming, In c clamping_timing_all.
+Proof. intros []; simpl; auto. Qed.
+
+Lemma clamping_timing_all_nodup : NoDup clamping_timing_all.
+Proof. repeat constructor; simpl; intuition discriminate. Qed.
+
+(** Timing in seconds *)
+Definition clamping_seconds_threshold_immediate : nat := 30.
+Definition clamping_seconds_threshold_delayed : nat := 60.
+
+(** Classify timing from seconds *)
+Definition of_seconds (secs : nat) : ClampingTiming :=
+  if secs <? clamping_seconds_threshold_immediate then ImmediateClamping
+  else if secs <=? clamping_seconds_threshold_delayed then DelayedClamping
+  else ExtendedDelayed.
+
+(** Is recommended timing? (DCC is standard of care) *)
+Definition is_recommended (c : ClampingTiming) : bool :=
+  match c with
+  | DelayedClamping | ExtendedDelayed => true
+  | _ => false
+  end.
+
+(** Contraindications to delayed clamping *)
+Inductive DCCContraindication : Type :=
+  | NeedsImmediateResuscitation : DCCContraindication
+  | PlacentalAbruption : DCCContraindication
+  | PlacentaPrevia : DCCContraindication
+  | CordProlapse : DCCContraindication
+  | MaternalHemorrhage : DCCContraindication.
+
+Definition dcc_contraindication_eq_dec : forall c1 c2 : DCCContraindication,
+  {c1 = c2} + {c1 <> c2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+(** Record for cord clamping event *)
+Record CordClampingEvent : Type := mkCordClamping {
+  clamping_timing : ClampingTiming;
+  clamping_seconds : nat;
+  clamping_contraindications : list DCCContraindication
+}.
+
+Definition has_contraindication (e : CordClampingEvent) : bool :=
+  match clamping_contraindications e with
+  | [] => false
+  | _ :: _ => true
+  end.
+
+Definition clamping_appropriate (e : CordClampingEvent) : bool :=
+  is_recommended (clamping_timing e) || has_contraindication e.
+
+Lemma delayed_is_appropriate : forall e,
+  clamping_timing e = DelayedClamping ->
+  clamping_appropriate e = true.
+Proof.
+  intros e H. unfold clamping_appropriate, is_recommended. rewrite H. reflexivity.
+Qed.
+
+End CordClamping.
+
+(******************************************************************************)
+(*                                                                            *)
+(*                    SECTION 8c: SURFACTANT ADMINISTRATION                   *)
+(*                                                                            *)
+(*  Surfactant therapy for preterm neonates with RDS. [NRP2021]               *)
+(*                                                                            *)
+(******************************************************************************)
+
+Module Surfactant.
+
+(** Surfactant types *)
+Inductive SurfactantType : Type :=
+  | Beractant : SurfactantType      (** Survanta *)
+  | Calfactant : SurfactantType     (** Infasurf *)
+  | Poractant : SurfactantType      (** Curosurf *)
+  | Lucinactant : SurfactantType.   (** Surfaxin - synthetic *)
+
+Definition surfactant_type_eq_dec : forall s1 s2 : SurfactantType,
+  {s1 = s2} + {s1 <> s2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition surfactant_type_all : list SurfactantType :=
+  [Beractant; Calfactant; Poractant; Lucinactant].
+
+Lemma surfactant_type_all_complete : forall s : SurfactantType, In s surfactant_type_all.
+Proof. intros []; simpl; auto. Qed.
+
+(** Administration methods *)
+Inductive AdministrationMethod : Type :=
+  | INSUREMethod : AdministrationMethod   (** Intubate-Surfactant-Extubate *)
+  | LISAMethod : AdministrationMethod     (** Less Invasive Surfactant Administration *)
+  | MISTMethod : AdministrationMethod     (** Minimally Invasive Surfactant Therapy *)
+  | StandardETT : AdministrationMethod.   (** Via ETT with mechanical ventilation *)
+
+Definition admin_method_eq_dec : forall m1 m2 : AdministrationMethod,
+  {m1 = m2} + {m1 <> m2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+(** Surfactant dosing in mg/kg *)
+Record SurfactantDose : Type := mkSurfactantDose {
+  dose_mg_per_kg : nat;
+  dose_valid : dose_mg_per_kg <= 200  (** Max reasonable dose *)
+}.
+
+Definition standard_dose_beractant : nat := 100.  (** 100 mg/kg *)
+Definition standard_dose_poractant_initial : nat := 200. (** 200 mg/kg initial *)
+Definition standard_dose_poractant_subsequent : nat := 100. (** 100 mg/kg repeat *)
+
+(** Surfactant administration record *)
+Record SurfactantAdmin : Type := mkSurfactantAdmin {
+  surfactant_type : SurfactantType;
+  admin_method : AdministrationMethod;
+  dose : SurfactantDose;
+  dose_number : nat;  (** 1 = first dose, 2 = second, etc. *)
+  minutes_of_life : nat
+}.
+
+(** Is this a less-invasive method? *)
+Definition is_less_invasive (m : AdministrationMethod) : bool :=
+  match m with
+  | LISAMethod | MISTMethod | INSUREMethod => true
+  | StandardETT => false
+  end.
+
+(** Indication check: preterm with RDS *)
+Definition ga_indicates_prophylactic (ga_weeks : nat) : bool :=
+  ga_weeks <? 26.  (** Prophylactic for extreme preterm *)
+
+Definition ga_indicates_early_rescue (ga_weeks : nat) : bool :=
+  ga_weeks <? 30.  (** Early rescue for very preterm *)
+
+End Surfactant.
+
+(******************************************************************************)
+(*                                                                            *)
+(*                    SECTION 8d: BLOOD GLUCOSE MONITORING                    *)
+(*                                                                            *)
+(*  Neonatal hypoglycemia detection and management.                           *)
+(*                                                                            *)
+(******************************************************************************)
+
+Module BloodGlucose.
+
+(** Blood glucose in mg/dL - simplified without dependent record *)
+Definition t : Type := nat.
+
+Definition value_mg_dl (g : t) : nat := g.
+
+(** Clinical thresholds in mg/dL *)
+Definition hypoglycemia_threshold : nat := 40.      (** < 40 mg/dL *)
+Definition target_min : nat := 45.                   (** Minimum target *)
+Definition target_max : nat := 120.                  (** Maximum normal *)
+Definition hyperglycemia_threshold : nat := 150.     (** > 150 mg/dL concerning *)
+Definition valid_max : nat := 500.                   (** Reasonable upper limit *)
+
+(** Classification *)
+Inductive Status : Type :=
+  | Hypoglycemic : Status       (** < 40 mg/dL - treat immediately *)
+  | LowNormal : Status          (** 40-44 mg/dL - close monitoring *)
+  | Normal : Status             (** 45-120 mg/dL *)
+  | Elevated : Status           (** 121-150 mg/dL *)
+  | Hyperglycemic : Status.     (** > 150 mg/dL *)
+
+Definition status_eq_dec : forall s1 s2 : Status, {s1 = s2} + {s1 <> s2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition status_all : list Status :=
+  [Hypoglycemic; LowNormal; Normal; Elevated; Hyperglycemic].
+
+Lemma status_all_complete : forall s : Status, In s status_all.
+Proof. intros []; simpl; tauto. Qed.
+
+Definition classify (g : t) : Status :=
+  if value_mg_dl g <? hypoglycemia_threshold then Hypoglycemic
+  else if value_mg_dl g <? target_min then LowNormal
+  else if value_mg_dl g <=? target_max then Normal
+  else if value_mg_dl g <=? hyperglycemia_threshold then Elevated
+  else Hyperglycemic.
+
+Definition is_hypoglycemic (g : t) : bool :=
+  value_mg_dl g <? hypoglycemia_threshold.
+
+Definition needs_treatment (g : t) : bool :=
+  value_mg_dl g <? target_min.
+
+Definition is_normal (g : t) : bool :=
+  (target_min <=? value_mg_dl g) && (value_mg_dl g <=? target_max).
+
+Definition is_valid (g : t) : bool := g <=? valid_max.
+
+(** Smart constructor *)
+Definition of_nat_opt (n : nat) : option t :=
+  if n <=? valid_max then Some n else None.
+
+Lemma of_nat_opt_some : forall n g,
+  of_nat_opt n = Some g -> value_mg_dl g = n.
+Proof.
+  intros n g H. unfold of_nat_opt in H.
+  destruct (n <=? valid_max) eqn:E; [|discriminate].
+  inversion H. reflexivity.
+Qed.
+
+(** Risk factors for neonatal hypoglycemia *)
+Inductive HypoglycemiaRiskFactor : Type :=
+  | InfantOfDiabeticMother : HypoglycemiaRiskFactor
+  | LargeForGA : HypoglycemiaRiskFactor
+  | SmallForGA : HypoglycemiaRiskFactor
+  | Preterm : HypoglycemiaRiskFactor
+  | Intrauterine_Growth_Restriction : HypoglycemiaRiskFactor
+  | PerinatalStress : HypoglycemiaRiskFactor.
+
+Definition risk_factor_eq_dec : forall r1 r2 : HypoglycemiaRiskFactor,
+  {r1 = r2} + {r1 <> r2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition risk_factor_all : list HypoglycemiaRiskFactor :=
+  [InfantOfDiabeticMother; LargeForGA; SmallForGA; Preterm;
+   Intrauterine_Growth_Restriction; PerinatalStress].
+
+Lemma risk_factor_all_complete : forall r : HypoglycemiaRiskFactor,
+  In r risk_factor_all.
+Proof. intros []; simpl; auto 10. Qed.
+
+(** Neonate with risk factors needs screening *)
+Definition needs_screening (risk_factors : list HypoglycemiaRiskFactor) : bool :=
+  match risk_factors with
+  | [] => false
+  | _ :: _ => true
+  end.
+
+End BloodGlucose.
 
 (******************************************************************************)
 (*                                                                            *)
@@ -5538,6 +6468,54 @@ Proof.
   - intro H. discriminate.
 Defined.
 
+(** Boolean check for well-formedness: resuscitation implies non-reassuring *)
+Definition is_well_formedb (e : t) : bool :=
+  negb (is_resuscitated e) ||
+  match Classification.eq_dec (underlying_classification e) Classification.Reassuring with
+  | left _ => false
+  | right _ => true
+  end.
+
+(** Well-formedness decidability *)
+Definition well_formed_dec (e : t) :
+  {is_resuscitated e = true -> underlying_classification e <> Classification.Reassuring} +
+  {~ (is_resuscitated e = true -> underlying_classification e <> Classification.Reassuring)}.
+Proof.
+  destruct (is_resuscitated e) eqn:Hres.
+  - destruct (Classification.eq_dec (underlying_classification e) Classification.Reassuring) as [Heq|Hne].
+    + right. intro H. apply H; [reflexivity | exact Heq].
+    + left. intros _. exact Hne.
+  - left. intros H. discriminate H.
+Defined.
+
+(** Constructing WellFormedExpandedForm when possible *)
+Definition make_well_formed_opt (e : t) : option WellFormedExpandedForm :=
+  match well_formed_dec e with
+  | left pf => Some (mkWellFormed e pf)
+  | right _ => None
+  end.
+
+Lemma make_well_formed_opt_some : forall e wf,
+  make_well_formed_opt e = Some wf -> form wf = e.
+Proof.
+  intros e wf H. unfold make_well_formed_opt in H.
+  destruct (well_formed_dec e) as [pf|pf]; [|discriminate].
+  inversion H. reflexivity.
+Qed.
+
+Lemma make_well_formed_opt_none : forall e,
+  make_well_formed_opt e = None ->
+  is_resuscitated e = true /\ underlying_classification e = Classification.Reassuring.
+Proof.
+  intros e H. unfold make_well_formed_opt in H.
+  destruct (well_formed_dec e) as [pf|pf]; [discriminate|].
+  destruct (is_resuscitated e) eqn:Hres.
+  - destruct (Classification.eq_dec (underlying_classification e) Classification.Reassuring) as [Heq|Hne].
+    + split; [reflexivity | exact Heq].
+    + exfalso. apply pf. intros _. exact Hne.
+  - exfalso. apply pf. intros Hcontra. discriminate Hcontra.
+Qed.
+
 End ExpandedForm.
 
 (******************************************************************************)
@@ -5828,6 +6806,136 @@ Proof.
   destruct (apgar_eligible c); simpl; [|reflexivity].
   destruct (acidosis_eligible c); simpl; [|reflexivity].
   unfold neuro_eligible, encephalopathy_qualifies. rewrite H. reflexivity.
+Qed.
+
+(** Contraindications to therapeutic hypothermia *)
+Inductive Contraindication : Type :=
+  | MajorCongenitalAnomaly : Contraindication
+  | MoribundInfant : Contraindication
+  | BirthWeightBelow1800g : Contraindication
+  | AgeOver6Hours : Contraindication
+  | ActiveBleeding : Contraindication
+  | SevereCoagulopathy : Contraindication
+  | RequiresSurgery : Contraindication.
+
+Definition contraindication_eq_dec : forall c1 c2 : Contraindication,
+  {c1 = c2} + {c1 <> c2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition contraindication_all : list Contraindication :=
+  [MajorCongenitalAnomaly; MoribundInfant; BirthWeightBelow1800g;
+   AgeOver6Hours; ActiveBleeding; SevereCoagulopathy; RequiresSurgery].
+
+Lemma contraindication_all_complete : forall c : Contraindication,
+  In c contraindication_all.
+Proof. intros []; simpl; auto 10. Qed.
+
+Lemma contraindication_all_nodup : NoDup contraindication_all.
+Proof. repeat constructor; simpl; intuition discriminate. Qed.
+
+(** Is contraindication absolute (never perform TH) or relative (consider risks) *)
+Definition is_absolute_contraindication (c : Contraindication) : bool :=
+  match c with
+  | MajorCongenitalAnomaly => true
+  | MoribundInfant => true
+  | AgeOver6Hours => true
+  | _ => false
+  end.
+
+Definition is_relative_contraindication (c : Contraindication) : bool :=
+  negb (is_absolute_contraindication c).
+
+(** Extended candidate with contraindication tracking *)
+Record ExtendedCandidate : Type := mkExtendedCandidate {
+  base_candidate : Candidate;
+  contraindications : list Contraindication;
+  birth_weight_g : option nat;
+  age_hours : option nat
+}.
+
+Definition has_any_contraindication (ec : ExtendedCandidate) : bool :=
+  match contraindications ec with
+  | [] => false
+  | _ :: _ => true
+  end.
+
+Definition has_absolute_contraindication (ec : ExtendedCandidate) : bool :=
+  existsb is_absolute_contraindication (contraindications ec).
+
+Definition has_weight_contraindication (ec : ExtendedCandidate) : bool :=
+  match birth_weight_g ec with
+  | Some w => w <? 1800
+  | None => false
+  end.
+
+Definition has_age_contraindication (ec : ExtendedCandidate) : bool :=
+  match age_hours ec with
+  | Some h => 6 <? h
+  | None => false
+  end.
+
+Definition all_contraindications_present (ec : ExtendedCandidate) : list Contraindication :=
+  let explicit := contraindications ec in
+  let weight_ci := if has_weight_contraindication ec then [BirthWeightBelow1800g] else [] in
+  let age_ci := if has_age_contraindication ec then [AgeOver6Hours] else [] in
+  explicit ++ weight_ci ++ age_ci.
+
+(** Final eligibility with contraindications *)
+Definition is_eligible_extended (ec : ExtendedCandidate) : bool :=
+  is_eligible (base_candidate ec) &&
+  negb (has_absolute_contraindication ec) &&
+  negb (has_weight_contraindication ec) &&
+  negb (has_age_contraindication ec).
+
+Theorem absolute_contraindication_excludes : forall ec,
+  has_absolute_contraindication ec = true ->
+  is_eligible_extended ec = false.
+Proof.
+  intros ec H. unfold is_eligible_extended.
+  rewrite H. simpl. rewrite andb_false_r. reflexivity.
+Qed.
+
+Theorem weight_contraindication_excludes : forall ec,
+  has_weight_contraindication ec = true ->
+  is_eligible_extended ec = false.
+Proof.
+  intros ec H. unfold is_eligible_extended.
+  rewrite H. simpl.
+  destruct (is_eligible (base_candidate ec)); simpl; [|reflexivity].
+  destruct (has_absolute_contraindication ec); simpl; reflexivity.
+Qed.
+
+Theorem age_contraindication_excludes : forall ec,
+  has_age_contraindication ec = true ->
+  is_eligible_extended ec = false.
+Proof.
+  intros ec H. unfold is_eligible_extended.
+  rewrite H. simpl.
+  destruct (is_eligible (base_candidate ec)); simpl; [|reflexivity].
+  destruct (has_absolute_contraindication ec); simpl; [reflexivity|].
+  destruct (has_weight_contraindication ec); simpl; reflexivity.
+Qed.
+
+Theorem extended_eligible_implies_base_eligible : forall ec,
+  is_eligible_extended ec = true ->
+  is_eligible (base_candidate ec) = true.
+Proof.
+  intros ec H. unfold is_eligible_extended in H.
+  apply andb_true_iff in H. destruct H as [H _].
+  apply andb_true_iff in H. destruct H as [H _].
+  apply andb_true_iff in H. destruct H as [H _].
+  exact H.
+Qed.
+
+Theorem extended_eligible_no_absolute : forall ec,
+  is_eligible_extended ec = true ->
+  has_absolute_contraindication ec = false.
+Proof.
+  intros ec H. unfold is_eligible_extended in H.
+  apply andb_true_iff in H. destruct H as [H _].
+  apply andb_true_iff in H. destruct H as [H _].
+  apply andb_true_iff in H. destruct H as [_ H].
+  apply negb_true_iff in H. exact H.
 Qed.
 
 End TherapeuticHypothermia.
@@ -7575,6 +8683,44 @@ Lemma count_score_changes_singleton : forall e,
   count_score_changes [e] = 0.
 Proof. reflexivity. Qed.
 
+(** Backward direction: chronological Prop implies chronologicalb true *)
+Lemma log_is_chronologicalb_correct_backward : forall log,
+  log_is_chronological log -> log_is_chronologicalb log = true.
+Proof.
+  intros log H.
+  induction log as [|e1 [|e2 rest] IH].
+  - reflexivity.
+  - reflexivity.
+  - simpl. apply andb_true_intro. split.
+    + apply Nat.leb_le.
+      specialize (H 0 1 ltac:(lia)).
+      simpl in H. apply H. simpl. lia.
+    + apply IH. intros i j Hij Hj.
+      assert (Hbound: S j < length (e1 :: e2 :: rest)).
+      { simpl. simpl in Hj. lia. }
+      specialize (H (S i) (S j) ltac:(lia) Hbound).
+      simpl in H. exact H.
+Qed.
+
+(** Full boolean reflection: iff version *)
+Theorem log_is_chronologicalb_correct : forall log,
+  log_is_chronologicalb log = true <-> log_is_chronological log.
+Proof.
+  intros log. split.
+  - apply log_is_chronologicalb_correct_forward.
+  - apply log_is_chronologicalb_correct_backward.
+Qed.
+
+(** Decidability of log_is_chronological *)
+Definition log_is_chronological_dec (log : AuditLog) :
+  {log_is_chronological log} + {~ log_is_chronological log}.
+Proof.
+  destruct (log_is_chronologicalb log) eqn:E.
+  - left. apply log_is_chronologicalb_correct_forward. exact E.
+  - right. intro H. apply log_is_chronologicalb_correct_backward in H.
+    rewrite H in E. discriminate.
+Defined.
+
 End AuditTrail.
 
 (******************************************************************************)
@@ -7907,4 +9053,69 @@ Extraction "apgar.ml"
   ExpandedForm.make_fio2 ExpandedForm.fio2_eq_dec
   ExpandedForm.ett_depth_clinically_valid ExpandedForm.make_ett_params
   ExpandedForm.ett_size_all ExpandedForm.ett_size_eq_dec
-  AuditTrail.log_is_chronologicalb_correct_forward.
+  AuditTrail.log_is_chronologicalb_correct_forward
+  AuditTrail.log_is_chronologicalb_correct_backward
+  AuditTrail.log_is_chronologicalb_correct
+  AuditTrail.log_is_chronological_dec
+  Classification.lt Classification.trichotomy Classification.strict_trichotomy
+  Classification.lt_irrefl Classification.lt_trans Classification.lt_le_incl
+  Intervention.lt Intervention.trichotomy Intervention.strict_trichotomy
+  Intervention.lt_irrefl Intervention.lt_trans Intervention.lt_le_incl
+  Timing.ToleranceLevel Timing.tolerance_to_secs Timing.is_within_tolerance
+  Timing.timing_deviation Timing.timing_deviation_signed
+  Timing.deviation_within_tolerance
+  CordBloodGas.SampleType CordBloodGas.sample_type_all
+  CordBloodGas.TypedSample CordBloodGas.mkTypedSample
+  CordBloodGas.sample_source CordBloodGas.sample_gas
+  CordBloodGas.PairedSamples CordBloodGas.mkPaired
+  CordBloodGas.arterial_sample CordBloodGas.venous_sample
+  CordBloodGas.av_ph_difference CordBloodGas.is_normal_av_difference
+  CordBloodGas.paired_indicates_asphyxia CordBloodGas.venous_only_asphyxia
+  TherapeuticHypothermia.Contraindication TherapeuticHypothermia.contraindication_all
+  TherapeuticHypothermia.is_absolute_contraindication
+  TherapeuticHypothermia.ExtendedCandidate TherapeuticHypothermia.mkExtendedCandidate
+  TherapeuticHypothermia.has_absolute_contraindication
+  TherapeuticHypothermia.has_weight_contraindication
+  TherapeuticHypothermia.has_age_contraindication
+  TherapeuticHypothermia.is_eligible_extended
+  Temperature.MeasurementSite Temperature.measurement_site_all
+  Temperature.site_offset_x10 Temperature.is_core_temperature_site
+  Temperature.SitedTemperature Temperature.mkSitedTemp
+  Temperature.temp_reading Temperature.temp_site
+  Temperature.estimate_core_temp Temperature.classify_sited
+  (* New in v1.1.0: Cord clamping *)
+  CordClamping.ClampingTiming CordClamping.clamping_timing_all
+  CordClamping.of_seconds CordClamping.is_recommended
+  CordClamping.DCCContraindication CordClamping.CordClampingEvent CordClamping.mkCordClamping
+  CordClamping.clamping_timing CordClamping.clamping_seconds
+  CordClamping.has_contraindication CordClamping.clamping_appropriate
+  (* New in v1.1.0: Surfactant administration *)
+  Surfactant.SurfactantType Surfactant.surfactant_type_all
+  Surfactant.AdministrationMethod Surfactant.admin_method_eq_dec
+  Surfactant.SurfactantDose Surfactant.mkSurfactantDose
+  Surfactant.SurfactantAdmin Surfactant.mkSurfactantAdmin
+  Surfactant.is_less_invasive
+  Surfactant.ga_indicates_prophylactic Surfactant.ga_indicates_early_rescue
+  (* New in v1.1.0: Blood glucose monitoring *)
+  BloodGlucose.t BloodGlucose.value_mg_dl
+  BloodGlucose.Status BloodGlucose.status_all BloodGlucose.classify
+  BloodGlucose.is_hypoglycemic BloodGlucose.needs_treatment BloodGlucose.is_normal
+  BloodGlucose.is_valid BloodGlucose.of_nat_opt
+  BloodGlucose.HypoglycemiaRiskFactor BloodGlucose.risk_factor_all
+  BloodGlucose.needs_screening
+  (* New in v1.1.0: Preterm-adjusted classification *)
+  Classification.preterm_adjustment Classification.adjusted_score
+  Classification.of_score_preterm_adjusted
+  Classification.PretermContext Classification.mkPretermContext
+  Classification.adjusted_classification
+  (* New in v1.1.0: ExpandedForm well-formedness *)
+  ExpandedForm.is_well_formedb ExpandedForm.well_formed_dec
+  ExpandedForm.make_well_formed_opt
+  (* New in v1.1.0: ValidSequence helpers *)
+  Timing.seq_last_assessment Timing.seq_last_time
+  Timing.seq_assessments Timing.seq_scores
+  Timing.seq_first_assessment Timing.score_at Timing.classification_at
+  Timing.score_improved Timing.all_scores_improving
+  Timing.seq_all_improving Timing.seq_reached_reassuring
+  (* New in v1.1.0: Assessment injectivity *)
+  Assessment.mk_injective_full.
