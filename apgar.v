@@ -44,39 +44,6 @@
 (*     PMID: 29262097                                                         *)
 (*                                                                            *)
 (******************************************************************************)
-(*                                                                            *)
-(*                          DESIGN PRINCIPLES                                 *)
-(*                                                                            *)
-(*  1. BOUNDED BY CONSTRUCTION: Score types are intrinsically bounded,        *)
-(*     not proven bounded after the fact.                                     *)
-(*                                                                            *)
-(*  2. DECIDABLE EVERYTHING: All predicates have computable decision          *)
-(*     procedures returning sumbool, not bool with separate correctness.      *)
-(*                                                                            *)
-(*  3. EXHAUSTIVE ENUMERATION: All finite types have explicit enumerations    *)
-(*     with machine-checked completeness proofs.                              *)
-(*                                                                            *)
-(*  4. SPECIFICATION AS TYPES: Correctness properties are embedded in         *)
-(*     type signatures, making violations unrepresentable.                    *)
-(*                                                                            *)
-(*  5. NO ESCAPE HATCHES: No axioms, no True placeholders, no admits.         *)
-(*     Every theorem is fully constructive.                                   *)
-(*                                                                            *)
-(*  6. NAMESPACE: This file defines a self-contained Apgar namespace.         *)
-(*     Import with: Require Import Apgar.                                     *)
-(*     Access types via: Assessment.t, Classification.t, Intervention.t       *)
-(*     Access theorems via: MainResults.score_bounded, Protocol.*, etc.       *)
-(*                                                                            *)
-(*  7. MODULARIZATION: For larger developments, consider splitting into:      *)
-(*       - ApgarTypes.v: BoundedNat, ScoreLevel, component types              *)
-(*       - ApgarScoring.v: Assessment, Reachability                           *)
-(*       - ApgarClassification.v: Classification, Intervention                *)
-(*       - ApgarProtocol.v: Timing, ExpandedForm, Protocol, Trajectory        *)
-(*       - ApgarExtraction.v: Extraction directives and tests                 *)
-(*     Use a _CoqProject file to manage dependencies.                         *)
-(*                                                                            *)
-(******************************************************************************)
-(*                                                                            *)
 (*                          CLINICAL LIMITATIONS                              *)
 (*                                                                            *)
 (*  This formalization has the following known limitations:                   *)
@@ -203,6 +170,25 @@ Ltac prove_all_complete := intros []; simpl; auto 10.
 
 Ltac prove_all_nodup := repeat constructor; simpl; intuition discriminate.
 
+Definition exhaustive_minimal {A : Type} (l : list A) (n : nat) : Prop :=
+  (forall a : A, In a l) /\ NoDup l /\ length l = n.
+
+Lemma exhaustive_minimal_intro : forall {A : Type} (l : list A) (n : nat),
+  (forall a : A, In a l) -> NoDup l -> length l = n -> exhaustive_minimal l n.
+Proof. intros A l n Hc Hnd Hl. unfold exhaustive_minimal. auto. Qed.
+
+Lemma exhaustive_minimal_complete : forall {A : Type} (l : list A) (n : nat),
+  exhaustive_minimal l n -> forall a : A, In a l.
+Proof. intros A l n [H _]. exact H. Qed.
+
+Lemma exhaustive_minimal_nodup : forall {A : Type} (l : list A) (n : nat),
+  exhaustive_minimal l n -> NoDup l.
+Proof. intros A l n [_ [H _]]. exact H. Qed.
+
+Lemma exhaustive_minimal_length : forall {A : Type} (l : list A) (n : nat),
+  exhaustive_minimal l n -> length l = n.
+Proof. intros A l n [_ [_ H]]. exact H. Qed.
+
 End ListHelpers.
 
 (******************************************************************************)
@@ -236,6 +222,45 @@ Qed.
 End BoundedNat.
 
 Notation "'Bounded' n" := (BoundedNat.t n) (at level 50).
+
+Module Interval.
+
+Record t : Type := mk {
+  lo : nat;
+  hi : nat;
+  lo_le_hi : lo <= hi
+}.
+
+Definition contains (i : t) (n : nat) : Prop := lo i <= n <= hi i.
+
+Definition containsb (i : t) (n : nat) : bool :=
+  (lo i <=? n) && (n <=? hi i).
+
+Lemma containsb_correct : forall i n,
+  containsb i n = true <-> contains i n.
+Proof.
+  intros i n. unfold containsb, contains.
+  rewrite andb_true_iff, Nat.leb_le, Nat.leb_le. tauto.
+Qed.
+
+Definition width (i : t) : nat := hi i - lo i + 1.
+
+Lemma width_pos : forall i, width i >= 1.
+Proof.
+  intros [lo hi pf]. unfold width. simpl. lia.
+Qed.
+
+Definition make (l h : nat) (pf : l <= h) : t := mk l h pf.
+
+Definition singleton (n : nat) : t := mk n n (le_n n).
+
+Lemma singleton_contains : forall n, contains (singleton n) n.
+Proof. intros n. unfold contains, singleton. simpl. lia. Qed.
+
+Lemma singleton_unique : forall n m, contains (singleton n) m -> m = n.
+Proof. intros n m [H1 H2]. simpl in *. lia. Qed.
+
+End Interval.
 
 (******************************************************************************)
 (*                                                                            *)
@@ -325,6 +350,14 @@ Definition score_to_nat {A : Type} `{Scoreable A} (a : A) : nat :=
 Lemma score_bounded : forall {A : Type} `{Scoreable A} (a : A),
   score_to_nat a <= 2.
 Proof. intros A H a. unfold score_to_nat. apply ScoreLevel.to_nat_bound. Qed.
+
+#[export] Instance Scoreable_ScoreLevel : Scoreable ScoreLevel.t := {
+  to_score := fun s => s;
+  score_eq_dec := ScoreLevel.eq_dec;
+  score_all := ScoreLevel.all;
+  score_all_complete := ScoreLevel.all_complete;
+  score_all_nodup := ScoreLevel.all_nodup
+}.
 
 (******************************************************************************)
 (*                                                                            *)
@@ -737,6 +770,14 @@ Proof.
   left. congruence.
 Defined.
 
+Theorem mk_injective : forall ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2,
+  mk ap1 pu1 gr1 ac1 re1 = mk ap2 pu2 gr2 ac2 re2 ->
+  ap1 = ap2 /\ pu1 = pu2 /\ gr1 = gr2 /\ ac1 = ac2 /\ re1 = re2.
+Proof.
+  intros ap1 ap2 pu1 pu2 gr1 gr2 ac1 ac2 re1 re2 H.
+  injection H. intros. subst. repeat split; reflexivity.
+Qed.
+
 Definition all : list t :=
   flat_map (fun ap =>
     flat_map (fun pu =>
@@ -863,6 +904,54 @@ Theorem set_respiration_preserves_others : forall a re,
   activity (set_respiration a re) = activity a.
 Proof. intros []; repeat split; reflexivity. Qed.
 
+Inductive ComponentIndex : Type :=
+  | IdxAppearance : ComponentIndex
+  | IdxPulse : ComponentIndex
+  | IdxGrimace : ComponentIndex
+  | IdxActivity : ComponentIndex
+  | IdxRespiration : ComponentIndex.
+
+Definition ComponentIndex_to_nat (ci : ComponentIndex) : nat :=
+  match ci with
+  | IdxAppearance => 0
+  | IdxPulse => 1
+  | IdxGrimace => 2
+  | IdxActivity => 3
+  | IdxRespiration => 4
+  end.
+
+Definition ComponentIndex_of_nat (n : nat) : ComponentIndex :=
+  match n with
+  | 0 => IdxAppearance
+  | 1 => IdxPulse
+  | 2 => IdxGrimace
+  | 3 => IdxActivity
+  | _ => IdxRespiration
+  end.
+
+Lemma ComponentIndex_of_to_nat : forall ci,
+  ComponentIndex_of_nat (ComponentIndex_to_nat ci) = ci.
+Proof. intros []; reflexivity. Qed.
+
+Lemma ComponentIndex_to_of_nat : forall n,
+  n <= 4 -> ComponentIndex_to_nat (ComponentIndex_of_nat n) = n.
+Proof.
+  intros [|[|[|[|[|n]]]]] H; try reflexivity; lia.
+Qed.
+
+Definition ComponentIndex_eq_dec : forall ci1 ci2 : ComponentIndex,
+  {ci1 = ci2} + {ci1 <> ci2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition ComponentIndex_all : list ComponentIndex :=
+  [IdxAppearance; IdxPulse; IdxGrimace; IdxActivity; IdxRespiration].
+
+Lemma ComponentIndex_all_complete : forall ci, In ci ComponentIndex_all.
+Proof. intros []; simpl; auto 10. Qed.
+
+Lemma ComponentIndex_all_nodup : NoDup ComponentIndex_all.
+Proof. ListHelpers.prove_all_nodup. Qed.
+
 Definition component_contribution (a : t) (idx : nat) : nat :=
   match idx with
   | 0 => ScoreLevel.to_nat (Appearance.to_score (appearance a))
@@ -871,6 +960,9 @@ Definition component_contribution (a : t) (idx : nat) : nat :=
   | 3 => ScoreLevel.to_nat (Activity.to_score (activity a))
   | _ => ScoreLevel.to_nat (Respiration.to_score (respiration a))
   end.
+
+Definition component_contribution_safe (a : t) (ci : ComponentIndex) : nat :=
+  component_contribution a (ComponentIndex_to_nat ci).
 
 Theorem total_is_sum_of_contributions : forall a,
   total_unbounded a = component_contribution a 0 +
@@ -900,6 +992,40 @@ Theorem set_respiration_only_changes_idx_4 : forall a re idx,
   idx < 4 -> component_contribution (set_respiration a re) idx = component_contribution a idx.
 Proof.
   intros [] re [|[|[|[|]]]]; intro H; try lia; reflexivity.
+Qed.
+
+Theorem component_independence : forall a idx,
+  idx <= 4 ->
+  forall a',
+  (forall j, j <= 4 -> j <> idx -> component_contribution a j = component_contribution a' j) ->
+  total_unbounded a' = total_unbounded a
+                       - component_contribution a idx
+                       + component_contribution a' idx.
+Proof.
+  intros a idx Hidx a' Hother.
+  rewrite (total_is_sum_of_contributions a).
+  rewrite (total_is_sum_of_contributions a').
+  destruct idx as [|[|[|[|[|idx]]]]]; try lia.
+  - rewrite <- (Hother 1 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 2 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 3 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 4 ltac:(lia) ltac:(lia)). lia.
+  - rewrite <- (Hother 0 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 2 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 3 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 4 ltac:(lia) ltac:(lia)). lia.
+  - rewrite <- (Hother 0 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 1 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 3 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 4 ltac:(lia) ltac:(lia)). lia.
+  - rewrite <- (Hother 0 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 1 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 2 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 4 ltac:(lia) ltac:(lia)). lia.
+  - rewrite <- (Hother 0 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 1 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 2 ltac:(lia) ltac:(lia)).
+    rewrite <- (Hother 3 ltac:(lia) ltac:(lia)). lia.
 Qed.
 
 Lemma component_score_bound : forall (A : Type) `{Scoreable A} (x : A),
@@ -1039,6 +1165,32 @@ Proof.
   unfold total_unbounded, component_scores in H. simpl in H.
   destruct ap, pu, gr, ac, re; simpl in H; try lia.
   repeat split; reflexivity.
+Qed.
+
+Theorem score_0_unique : forall a : t,
+  total_unbounded a = 0 -> a = minimum.
+Proof.
+  intros a H.
+  destruct (minimum_is_unique_zero a H) as [Hap [Hpu [Hgr [Hac Hre]]]].
+  destruct a. simpl in *. subst. reflexivity.
+Qed.
+
+Theorem score_10_unique : forall a : t,
+  total_unbounded a = 10 -> a = maximum.
+Proof.
+  intros a H.
+  destruct (perfect_score_requires_all_max a H) as [Hap [Hpu [Hgr [Hac Hre]]]].
+  destruct a. simpl in *. subst. reflexivity.
+Qed.
+
+Theorem score_0_and_10_injective :
+  forall a1 a2 : t,
+  (total_unbounded a1 = 0 /\ total_unbounded a2 = 0 -> a1 = a2) /\
+  (total_unbounded a1 = 10 /\ total_unbounded a2 = 10 -> a1 = a2).
+Proof.
+  intros a1 a2. split; intros [H1 H2].
+  - rewrite (score_0_unique a1 H1), (score_0_unique a2 H2). reflexivity.
+  - rewrite (score_10_unique a1 H1), (score_10_unique a2 H2). reflexivity.
 Qed.
 
 Definition score_5_witness_1 : t :=
@@ -1445,6 +1597,22 @@ Definition to_score_range (c : t) : nat * nat :=
   | Reassuring => (7, 10)
   end.
 
+Definition to_score_interval (c : t) : Interval.t :=
+  match c with
+  | Low => Interval.make 0 3 ltac:(lia)
+  | ModeratelyAbnormal => Interval.make 4 6 ltac:(lia)
+  | Reassuring => Interval.make 7 10 ltac:(lia)
+  end.
+
+Lemma to_score_interval_correct : forall c s,
+  Interval.contains (to_score_interval c) s -> of_score s = c.
+Proof.
+  intros [] s [Hlo Hhi]; simpl in *.
+  - apply of_score_low. lia.
+  - apply of_score_moderate. lia.
+  - apply of_score_reassuring. lia.
+Qed.
+
 Definition representative_score (c : t) : nat :=
   match c with
   | Low => 0
@@ -1650,6 +1818,22 @@ Qed.
 Theorem zero_requires_full : of_score 0 = FullResuscitation.
 Proof. reflexivity. Qed.
 
+Theorem full_requires_zero : forall s, of_score s = FullResuscitation -> s = 0.
+Proof.
+  intros s H. unfold of_score in H.
+  destruct (7 <=? s) eqn:E1; [discriminate|].
+  destruct (4 <=? s) eqn:E2; [discriminate|].
+  destruct (1 <=? s) eqn:E3; [discriminate|].
+  apply Nat.leb_gt in E3. lia.
+Qed.
+
+Theorem full_iff_zero : forall s, of_score s = FullResuscitation <-> s = 0.
+Proof.
+  intros s. split.
+  - apply full_requires_zero.
+  - intros H. subst. apply zero_requires_full.
+Qed.
+
 Theorem perfect_requires_routine : of_score 10 = RoutineCare.
 Proof. reflexivity. Qed.
 
@@ -1735,6 +1919,35 @@ Definition to_score_range (i : t) : nat * nat :=
   | StimulationOxygen => (4, 6)
   | RoutineCare => (7, 10)
   end.
+
+Definition to_score_interval (i : t) : Interval.t :=
+  match i with
+  | FullResuscitation => Interval.make 0 0 (le_n 0)
+  | PositivePressureVentilation => Interval.make 1 3 ltac:(lia)
+  | StimulationOxygen => Interval.make 4 6 ltac:(lia)
+  | RoutineCare => Interval.make 7 10 ltac:(lia)
+  end.
+
+Lemma to_score_interval_correct : forall i s,
+  Interval.contains (to_score_interval i) s -> of_score s = i.
+Proof.
+  intros [] s H; unfold Interval.contains, to_score_interval, Interval.make,
+    Interval.lo, Interval.hi in H; simpl in H; destruct H as [Hlo Hhi];
+  unfold of_score.
+  - destruct (7 <=? s) eqn:E1; [reflexivity|].
+    exfalso. apply Nat.leb_gt in E1. lia.
+  - destruct (7 <=? s) eqn:E1.
+    + exfalso. apply Nat.leb_le in E1. lia.
+    + destruct (4 <=? s) eqn:E2; [reflexivity|].
+      exfalso. apply Nat.leb_gt in E2. lia.
+  - destruct (7 <=? s) eqn:E1.
+    + exfalso. apply Nat.leb_le in E1. lia.
+    + destruct (4 <=? s) eqn:E2.
+      * exfalso. apply Nat.leb_le in E2. lia.
+      * destruct (1 <=? s) eqn:E3; [reflexivity|].
+        exfalso. apply Nat.leb_gt in E3. lia.
+  - destruct s; [reflexivity | lia].
+Qed.
 
 Definition representative_score (i : t) : nat :=
   match i with
@@ -1870,6 +2083,9 @@ Definition all : list Time := [Min1; Min5; Min10; Min15; Min20].
 
 Lemma all_complete : forall t : Time, In t all.
 Proof. ListHelpers.prove_all_complete. Qed.
+
+Lemma all_nodup : NoDup all.
+Proof. ListHelpers.prove_all_nodup. Qed.
 
 Definition is_standard (t : Time) : bool :=
   match t with Min1 | Min5 => true | _ => false end.
@@ -2590,6 +2806,21 @@ Fixpoint adjacent_pairs (t : trajectory) : list (nat * nat) :=
   | s1 :: ((s2 :: _) as rest) => (s1, s2) :: adjacent_pairs rest
   end.
 
+Lemma adjacent_pairs_length : forall t,
+  length t >= 1 -> length (adjacent_pairs t) = length t - 1.
+Proof.
+  induction t as [|s1 [|s2 t'] IH]; intros Hlen; simpl in *.
+  - lia.
+  - lia.
+  - rewrite IH; simpl; lia.
+Qed.
+
+Lemma adjacent_pairs_length_nonempty : forall t,
+  length t >= 2 -> length (adjacent_pairs t) >= 1.
+Proof.
+  intros t H. rewrite adjacent_pairs_length; lia.
+Qed.
+
 Theorem improving_trajectory_all_pairs : forall t,
   is_improving_trajectory t ->
   forall p, In p (adjacent_pairs t) -> fst p <= snd p.
@@ -2783,6 +3014,87 @@ Proof. exact Assessment.all_length. Qed.
 Theorem all_assessments_covered : forall a : Assessment.t, In a Assessment.all.
 Proof. exact Assessment.all_complete. Qed.
 
+Theorem scorelevel_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal ScoreLevel.all 3.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact ScoreLevel.all_complete.
+  - exact ScoreLevel.all_nodup.
+  - reflexivity.
+Qed.
+
+Theorem appearance_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Appearance.all 3.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Appearance.all_complete.
+  - exact Appearance.all_nodup.
+  - exact Appearance.all_length.
+Qed.
+
+Theorem pulse_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Pulse.all 3.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Pulse.all_complete.
+  - exact Pulse.all_nodup.
+  - exact Pulse.all_length.
+Qed.
+
+Theorem grimace_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Grimace.all 3.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Grimace.all_complete.
+  - exact Grimace.all_nodup.
+  - exact Grimace.all_length.
+Qed.
+
+Theorem activity_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Activity.all 3.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Activity.all_complete.
+  - exact Activity.all_nodup.
+  - exact Activity.all_length.
+Qed.
+
+Theorem respiration_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Respiration.all 3.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Respiration.all_complete.
+  - exact Respiration.all_nodup.
+  - exact Respiration.all_length.
+Qed.
+
+Theorem assessment_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Assessment.all 243.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Assessment.all_complete.
+  - exact Assessment.all_nodup.
+  - exact Assessment.all_length.
+Qed.
+
+Theorem classification_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Classification.all 3.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Classification.all_complete.
+  - exact Classification.all_nodup.
+  - reflexivity.
+Qed.
+
+Theorem intervention_exhaustive_minimal :
+  ListHelpers.exhaustive_minimal Intervention.all 4.
+Proof.
+  apply ListHelpers.exhaustive_minimal_intro.
+  - exact Intervention.all_complete.
+  - exact Intervention.all_nodup.
+  - reflexivity.
+Qed.
+
 End MainResults.
 
 (******************************************************************************)
@@ -2794,17 +3106,27 @@ End MainResults.
 (******************************************************************************)
 
 #[export] Hint Resolve ScoreLevel.all_complete : apgar.
+#[export] Hint Resolve ScoreLevel.all_nodup : apgar.
 #[export] Hint Resolve ScoreLevel.to_nat_bound : apgar.
 #[export] Hint Resolve Appearance.all_complete : apgar.
+#[export] Hint Resolve Appearance.all_nodup : apgar.
 #[export] Hint Resolve Pulse.all_complete : apgar.
+#[export] Hint Resolve Pulse.all_nodup : apgar.
 #[export] Hint Resolve Grimace.all_complete : apgar.
+#[export] Hint Resolve Grimace.all_nodup : apgar.
 #[export] Hint Resolve Activity.all_complete : apgar.
+#[export] Hint Resolve Activity.all_nodup : apgar.
 #[export] Hint Resolve Respiration.all_complete : apgar.
+#[export] Hint Resolve Respiration.all_nodup : apgar.
 #[export] Hint Resolve Assessment.all_complete : apgar.
+#[export] Hint Resolve Assessment.all_nodup : apgar.
 #[export] Hint Resolve Assessment.total_max : apgar.
 #[export] Hint Resolve Classification.all_complete : apgar.
+#[export] Hint Resolve Classification.all_nodup : apgar.
 #[export] Hint Resolve Intervention.all_complete : apgar.
+#[export] Hint Resolve Intervention.all_nodup : apgar.
 #[export] Hint Resolve Timing.all_complete : apgar.
+#[export] Hint Resolve Timing.all_nodup : apgar.
 
 #[export] Hint Rewrite Classification.low_iff : apgar.
 #[export] Hint Rewrite Classification.moderate_iff : apgar.
@@ -2812,6 +3134,12 @@ End MainResults.
 
 #[export] Hint Resolve Intervention.reassuring_gets_routine : apgar.
 #[export] Hint Resolve Intervention.low_not_routine : apgar.
+#[export] Hint Resolve Intervention.full_iff_zero : apgar.
+
+#[export] Hint Resolve Assessment.score_0_unique : apgar.
+#[export] Hint Resolve Assessment.score_10_unique : apgar.
+#[export] Hint Resolve Assessment.ComponentIndex_all_complete : apgar.
+#[export] Hint Resolve Assessment.ComponentIndex_all_nodup : apgar.
 
 (******************************************************************************)
 (*                                                                            *)
@@ -2948,19 +3276,3 @@ Extraction "apgar.ml"
   Pulse.of_bpm Pulse.of_bpm_detailed
   Pulse.DetailedPulse Pulse.detailed_to_simple
   Reachability.witness_fn.
-
-(******************************************************************************)
-(*                                                                            *)
-(*                              END OF FILE                                   *)
-(*                                                                            *)
-(*  Verified properties:                                                      *)
-(*    - Score boundedness: 0 <= total <= 10                                   *)
-(*    - Score completeness: all integers 0-10 achievable                      *)
-(*    - Classification correctness: thresholds match [AAP2015]                *)
-(*    - Intervention consistency: classification determines urgency           *)
-(*    - Protocol termination: reassuring or max time stops extension          *)
-(*    - Finite enumeration: exactly 243 distinct assessments                  *)
-(*                                                                            *)
-(*  No axioms. Fully constructive. Machine-verified in Coq 8.19+.             *)
-(*                                                                            *)
-(******************************************************************************)
