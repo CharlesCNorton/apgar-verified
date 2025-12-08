@@ -110,6 +110,9 @@ Require Import Lia.
 Require Import Program.
 Import ListNotations.
 
+(** Suppress large number warnings for physiological constants like birth weight *)
+Set Warnings "-abstract-large-number".
+
 (******************************************************************************)
 (*                                                                            *)
 (*                    MODULE TYPE SIGNATURES                                  *)
@@ -783,6 +786,123 @@ Theorem is_term_not_preterm : forall ga,
 Proof.
   intros ga H. apply is_term_iff in H. destruct H as [H _].
   unfold is_preterm. apply Nat.ltb_ge. exact H.
+Qed.
+
+(** Periviable neonates: gestational age at limit of viability (22-24 weeks)
+    Per AAP/ACOG guidelines, resuscitation decisions at these gestational ages
+    require shared decision-making with parents due to high mortality and
+    morbidity risk. This is NOT an automatic do-not-resuscitate indication. *)
+
+Definition periviable_lower : nat := 22.
+Definition periviable_upper : nat := 24.
+
+Definition is_periviable (ga : t) : bool :=
+  (periviable_lower <=? weeks ga) && (weeks ga <=? periviable_upper).
+
+Definition is_below_viability (ga : t) : bool :=
+  weeks ga <? periviable_lower.
+
+Lemma is_periviable_iff : forall ga,
+  is_periviable ga = true <-> periviable_lower <= weeks ga <= periviable_upper.
+Proof.
+  intros ga. unfold is_periviable.
+  rewrite andb_true_iff, Nat.leb_le, Nat.leb_le. tauto.
+Qed.
+
+Lemma is_below_viability_iff : forall ga,
+  is_below_viability ga = true <-> weeks ga < periviable_lower.
+Proof. intros ga. unfold is_below_viability. rewrite Nat.ltb_lt. tauto. Qed.
+
+Theorem periviable_is_extremely_preterm : forall ga,
+  is_periviable ga = true -> classify ga = ExtremelyPreterm.
+Proof.
+  intros ga H. apply is_periviable_iff in H. destruct H as [Hlo Hhi].
+  unfold classify, extremely_preterm_threshold, periviable_upper in *.
+  destruct (weeks ga <? 28) eqn:E; [reflexivity|].
+  apply Nat.ltb_ge in E. lia.
+Qed.
+
+Theorem below_viability_is_extremely_preterm : forall ga,
+  is_below_viability ga = true -> classify ga = ExtremelyPreterm.
+Proof.
+  intros ga H. apply is_below_viability_iff in H.
+  unfold classify, extremely_preterm_threshold, periviable_lower in *.
+  destruct (weeks ga <? 28) eqn:E; [reflexivity|].
+  apply Nat.ltb_ge in E. lia.
+Qed.
+
+(** Viability consultation requirement *)
+Inductive ViabilityConsultation : Type :=
+  | ConsultationRequired : ViabilityConsultation
+  | ConsultationRecommended : ViabilityConsultation
+  | StandardCare : ViabilityConsultation.
+
+Definition viability_consultation_eq_dec : forall v1 v2 : ViabilityConsultation,
+  {v1 = v2} + {v1 <> v2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition consultation_needed (ga : t) : ViabilityConsultation :=
+  if is_below_viability ga then ConsultationRequired
+  else if is_periviable ga then ConsultationRequired
+  else if weeks ga <? 26 then ConsultationRecommended
+  else StandardCare.
+
+Theorem periviable_requires_consultation : forall ga,
+  is_periviable ga = true -> consultation_needed ga = ConsultationRequired.
+Proof.
+  intros ga H. unfold consultation_needed.
+  destruct (is_below_viability ga) eqn:E1; [reflexivity|].
+  rewrite H. reflexivity.
+Qed.
+
+Theorem below_viability_requires_consultation : forall ga,
+  is_below_viability ga = true -> consultation_needed ga = ConsultationRequired.
+Proof.
+  intros ga H. unfold consultation_needed. rewrite H. reflexivity.
+Qed.
+
+Theorem term_standard_care : forall ga,
+  is_term ga = true -> consultation_needed ga = StandardCare.
+Proof.
+  intros ga H. apply is_term_iff in H. destruct H as [Hlo _].
+  unfold consultation_needed.
+  destruct (is_below_viability ga) eqn:E1.
+  - apply is_below_viability_iff in E1.
+    unfold periviable_lower, term_threshold in *. lia.
+  - destruct (is_periviable ga) eqn:E2.
+    + apply is_periviable_iff in E2. destruct E2 as [_ Hhi].
+      unfold periviable_upper, term_threshold in *. lia.
+    + destruct (weeks ga <? 26) eqn:E3.
+      * apply Nat.ltb_lt in E3. unfold term_threshold in *. lia.
+      * reflexivity.
+Qed.
+
+(** Periviable weight estimation: expected birthweight at periviable GA
+    Used for drug dosing when actual weight unavailable.
+    Values are 50th percentile estimates. *)
+Definition estimated_weight_g_at_weeks (w : nat) : nat :=
+  match w with
+  | 22 => 500
+  | 23 => 550
+  | 24 => 650
+  | 25 => 750
+  | 26 => 850
+  | 27 => 1000
+  | 28 => 1100
+  | _ => if w <? 22 then 400 else 1200 + (w - 28) * 150
+  end.
+
+Definition estimated_weight_g (ga : t) : nat :=
+  estimated_weight_g_at_weeks (weeks ga).
+
+Theorem periviable_weight_under_1000g : forall ga,
+  is_periviable ga = true -> estimated_weight_g ga < 1000.
+Proof.
+  intros ga H. apply is_periviable_iff in H. destruct H as [Hlo Hhi].
+  unfold estimated_weight_g, estimated_weight_g_at_weeks, periviable_lower, periviable_upper in *.
+  destruct (weeks ga); [lia|].
+  do 24 (destruct n; [simpl; lia|]).
+  simpl. lia.
 Qed.
 
 End GestationalAge.
@@ -3761,6 +3881,63 @@ Lemma score_distribution_sum :
   fold_left (fun acc p => acc + snd p) score_distribution 0 = 243.
 Proof. reflexivity. Qed.
 
+Definition multinomial_coefficient (k : nat) : nat :=
+  match k with
+  | 0 => 1 | 1 => 5 | 2 => 15 | 3 => 30 | 4 => 45
+  | 5 => 51 | 6 => 45 | 7 => 30 | 8 => 15 | 9 => 5 | _ => 1
+  end.
+
+Theorem score_count_equals_multinomial : forall k,
+  k <= 10 -> count_assessments_with_score k = multinomial_coefficient k.
+Proof.
+  intros k Hk.
+  destruct k as [|[|[|[|[|[|[|[|[|[|[|k]]]]]]]]]]]; try lia; reflexivity.
+Qed.
+
+Theorem score_distribution_symmetric : forall k,
+  k <= 5 -> count_assessments_with_score k = count_assessments_with_score (10 - k).
+Proof.
+  intros k Hk.
+  destruct k as [|[|[|[|[|[|k]]]]]]; try lia; reflexivity.
+Qed.
+
+Theorem score_5_is_mode : forall k,
+  k <= 10 -> count_assessments_with_score k <= count_assessments_with_score 5.
+Proof.
+  intros k Hk.
+  destruct k as [|[|[|[|[|[|[|[|[|[|[|k]]]]]]]]]]]; try lia; simpl; lia.
+Qed.
+
+Theorem extreme_scores_least_common :
+  count_assessments_with_score 0 = 1 /\
+  count_assessments_with_score 10 = 1 /\
+  (forall k, 1 <= k <= 9 -> count_assessments_with_score k > 1).
+Proof.
+  repeat split.
+  - reflexivity.
+  - reflexivity.
+  - intros k Hk.
+    destruct k as [|[|[|[|[|[|[|[|[|[|k]]]]]]]]]]; try lia; simpl; lia.
+Qed.
+
+Theorem multinomial_sum_is_3_pow_5 :
+  fold_left Nat.add (map multinomial_coefficient (seq 0 11)) 0 = 243.
+Proof. reflexivity. Qed.
+
+Theorem score_count_monotonic_to_5 : forall k,
+  k <= 4 -> count_assessments_with_score k < count_assessments_with_score (S k).
+Proof.
+  intros k Hk.
+  destruct k as [|[|[|[|[|k]]]]]; try lia; simpl; lia.
+Qed.
+
+Theorem score_count_monotonic_from_5 : forall k,
+  5 <= k <= 9 -> count_assessments_with_score (S k) < count_assessments_with_score k.
+Proof.
+  intros k Hk.
+  destruct k as [|[|[|[|[|[|[|[|[|[|k]]]]]]]]]]; try lia; simpl; lia.
+Qed.
+
 (** All scores 0-10 are achievable (constructive proof) *)
 Theorem all_scores_achievable : forall n, n <= 10 ->
   count_assessments_with_score n >= 1.
@@ -4082,6 +4259,294 @@ Proof.
 Qed.
 
 End Assessment.
+
+(******************************************************************************)
+(*                                                                            *)
+(*                    SECTION 4b: PARTIAL ASSESSMENT                          *)
+(*                                                                            *)
+(*  Handles cases where one or more components cannot be assessed due to      *)
+(*  clinical circumstances (infant covered, equipment failure, etc.).         *)
+(*  Provides minimum/maximum score bounds and completeness predicates.        *)
+(*                                                                            *)
+(******************************************************************************)
+
+Module PartialAssessment.
+
+(** Reason why a component cannot be assessed *)
+Inductive ObservationBarrier : Type :=
+  | InfantCovered : ObservationBarrier
+  | EquipmentFailure : ObservationBarrier
+  | OngoingProcedure : ObservationBarrier
+  | InsufficientLighting : ObservationBarrier
+  | ObserverUnavailable : ObservationBarrier
+  | OtherBarrier : ObservationBarrier.
+
+Definition barrier_eq_dec : forall b1 b2 : ObservationBarrier, {b1 = b2} + {b1 <> b2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition barrier_all : list ObservationBarrier :=
+  [InfantCovered; EquipmentFailure; OngoingProcedure;
+   InsufficientLighting; ObserverUnavailable; OtherBarrier].
+
+Lemma barrier_all_complete : forall b : ObservationBarrier, In b barrier_all.
+Proof. intros []; simpl; auto 10. Qed.
+
+(** Observable wraps a component value with optional barrier *)
+Inductive Observable (A : Type) : Type :=
+  | Observed : A -> Observable A
+  | Unobserved : ObservationBarrier -> Observable A.
+
+Arguments Observed {A}.
+Arguments Unobserved {A}.
+
+Definition observable_eq_dec {A : Type} (A_eq_dec : forall a1 a2 : A, {a1 = a2} + {a1 <> a2})
+  : forall o1 o2 : Observable A, {o1 = o2} + {o1 <> o2}.
+Proof.
+  intros [a1|b1] [a2|b2].
+  - destruct (A_eq_dec a1 a2); [left; congruence | right; congruence].
+  - right. discriminate.
+  - right. discriminate.
+  - destruct (barrier_eq_dec b1 b2); [left; congruence | right; congruence].
+Defined.
+
+Definition is_observed {A : Type} (o : Observable A) : bool :=
+  match o with Observed _ => true | Unobserved _ => false end.
+
+Definition get_value {A : Type} (o : Observable A) : option A :=
+  match o with Observed a => Some a | Unobserved _ => None end.
+
+Definition get_barrier {A : Type} (o : Observable A) : option ObservationBarrier :=
+  match o with Observed _ => None | Unobserved b => Some b end.
+
+(** Partial assessment with optional components *)
+Record t : Type := mk {
+  appearance : Observable Appearance.t;
+  pulse : Observable Pulse.t;
+  grimace : Observable Grimace.t;
+  activity : Observable Activity.t;
+  respiration : Observable Respiration.t
+}.
+
+(** Count of observed components (0-5) *)
+Definition observed_count (pa : t) : nat :=
+  (if is_observed (appearance pa) then 1 else 0) +
+  (if is_observed (pulse pa) then 1 else 0) +
+  (if is_observed (grimace pa) then 1 else 0) +
+  (if is_observed (activity pa) then 1 else 0) +
+  (if is_observed (respiration pa) then 1 else 0).
+
+(** Is the assessment complete (all 5 observed)? *)
+Definition is_complete (pa : t) : bool := observed_count pa =? 5.
+
+Lemma observed_count_bound : forall pa, observed_count pa <= 5.
+Proof.
+  intros pa. unfold observed_count.
+  destruct (is_observed (appearance pa));
+  destruct (is_observed (pulse pa));
+  destruct (is_observed (grimace pa));
+  destruct (is_observed (activity pa));
+  destruct (is_observed (respiration pa)); simpl; lia.
+Qed.
+
+(** Convert complete partial assessment to full assessment *)
+Definition to_assessment (pa : t) : option Assessment.t :=
+  match appearance pa, pulse pa, grimace pa, activity pa, respiration pa with
+  | Observed ap, Observed pu, Observed gr, Observed ac, Observed re =>
+      Some (Assessment.mk ap pu gr ac re)
+  | _, _, _, _, _ => None
+  end.
+
+Theorem to_assessment_some_iff_complete : forall pa,
+  (exists a, to_assessment pa = Some a) <-> is_complete pa = true.
+Proof.
+  intros pa. split.
+  - intros [a H]. unfold to_assessment in H.
+    destruct (appearance pa) as [ap|]; [|discriminate].
+    destruct (pulse pa) as [pu|]; [|discriminate].
+    destruct (grimace pa) as [gr|]; [|discriminate].
+    destruct (activity pa) as [ac|]; [|discriminate].
+    destruct (respiration pa) as [re|]; [|discriminate].
+    unfold is_complete, observed_count. simpl. reflexivity.
+  - intros H. unfold is_complete in H. apply Nat.eqb_eq in H.
+    unfold observed_count in H.
+    destruct (appearance pa) as [ap|bp]; [|simpl in H; lia].
+    destruct (pulse pa) as [pu|bp]; [|simpl in H; lia].
+    destruct (grimace pa) as [gr|bp]; [|simpl in H; lia].
+    destruct (activity pa) as [ac|bp]; [|simpl in H; lia].
+    destruct (respiration pa) as [re|bp]; [|simpl in H; lia].
+    exists (Assessment.mk ap pu gr ac re). reflexivity.
+Qed.
+
+(** Lift full assessment to partial (all observed) *)
+Definition of_assessment (a : Assessment.t) : t :=
+  mk (Observed (Assessment.appearance a))
+     (Observed (Assessment.pulse a))
+     (Observed (Assessment.grimace a))
+     (Observed (Assessment.activity a))
+     (Observed (Assessment.respiration a)).
+
+Theorem of_assessment_complete : forall a,
+  is_complete (of_assessment a) = true.
+Proof. intros a. reflexivity. Qed.
+
+Theorem of_to_assessment : forall a,
+  to_assessment (of_assessment a) = Some a.
+Proof.
+  intros [ap pu gr ac re]. reflexivity.
+Qed.
+
+(** Score bounds for partial assessments:
+    - Minimum: count unobserved as 0
+    - Maximum: count unobserved as 2 *)
+
+Definition component_score_min {A : Type} (to_score : A -> ScoreLevel.t) (o : Observable A) : nat :=
+  match o with
+  | Observed a => ScoreLevel.to_nat (to_score a)
+  | Unobserved _ => 0
+  end.
+
+Definition component_score_max {A : Type} (to_score : A -> ScoreLevel.t) (o : Observable A) : nat :=
+  match o with
+  | Observed a => ScoreLevel.to_nat (to_score a)
+  | Unobserved _ => 2
+  end.
+
+Definition score_minimum (pa : t) : nat :=
+  component_score_min Appearance.to_score (appearance pa) +
+  component_score_min Pulse.to_score (pulse pa) +
+  component_score_min Grimace.to_score (grimace pa) +
+  component_score_min Activity.to_score (activity pa) +
+  component_score_min Respiration.to_score (respiration pa).
+
+Definition score_maximum (pa : t) : nat :=
+  component_score_max Appearance.to_score (appearance pa) +
+  component_score_max Pulse.to_score (pulse pa) +
+  component_score_max Grimace.to_score (grimace pa) +
+  component_score_max Activity.to_score (activity pa) +
+  component_score_max Respiration.to_score (respiration pa).
+
+Theorem score_min_le_max : forall pa, score_minimum pa <= score_maximum pa.
+Proof.
+  intros pa. unfold score_minimum, score_maximum.
+  destruct (appearance pa); destruct (pulse pa); destruct (grimace pa);
+  destruct (activity pa); destruct (respiration pa); simpl; lia.
+Qed.
+
+Theorem score_maximum_bound : forall pa, score_maximum pa <= 10.
+Proof.
+  intros pa. unfold score_maximum, component_score_max.
+  pose proof (ScoreLevel.to_nat_bound (Appearance.to_score (
+    match appearance pa with Observed a => a | Unobserved _ => Appearance.PaleBlue end))).
+  pose proof (ScoreLevel.to_nat_bound (Pulse.to_score (
+    match pulse pa with Observed a => a | Unobserved _ => Pulse.Absent end))).
+  pose proof (ScoreLevel.to_nat_bound (Grimace.to_score (
+    match grimace pa with Observed a => a | Unobserved _ => Grimace.NoResponse end))).
+  pose proof (ScoreLevel.to_nat_bound (Activity.to_score (
+    match activity pa with Observed a => a | Unobserved _ => Activity.Flaccid end))).
+  pose proof (ScoreLevel.to_nat_bound (Respiration.to_score (
+    match respiration pa with Observed a => a | Unobserved _ => Respiration.Apneic end))).
+  destruct (appearance pa); destruct (pulse pa); destruct (grimace pa);
+  destruct (activity pa); destruct (respiration pa); simpl; try lia.
+  all: pose proof (ScoreLevel.to_nat_bound (Appearance.to_score t0));
+       pose proof (ScoreLevel.to_nat_bound (Pulse.to_score t1));
+       pose proof (ScoreLevel.to_nat_bound (Grimace.to_score t2));
+       pose proof (ScoreLevel.to_nat_bound (Activity.to_score t3));
+       pose proof (ScoreLevel.to_nat_bound (Respiration.to_score t4)); lia.
+Qed.
+
+Theorem complete_score_exact : forall pa a,
+  to_assessment pa = Some a ->
+  score_minimum pa = Assessment.total_unbounded a /\
+  score_maximum pa = Assessment.total_unbounded a.
+Proof.
+  intros pa a H. unfold to_assessment in H.
+  destruct (appearance pa) as [ap|]; [|discriminate].
+  destruct (pulse pa) as [pu|]; [|discriminate].
+  destruct (grimace pa) as [gr|]; [|discriminate].
+  destruct (activity pa) as [ac|]; [|discriminate].
+  destruct (respiration pa) as [re|]; [|discriminate].
+  inversion H. subst. split; reflexivity.
+Qed.
+
+(** Which components are missing? *)
+Inductive MnemonicComponent : Type :=
+  | MAppearance : MnemonicComponent
+  | MPulse : MnemonicComponent
+  | MGrimace : MnemonicComponent
+  | MActivity : MnemonicComponent
+  | MRespiration : MnemonicComponent.
+
+Definition mnemonic_eq_dec : forall m1 m2 : MnemonicComponent, {m1 = m2} + {m1 <> m2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition missing_appearance (pa : t) : bool := negb (is_observed (appearance pa)).
+Definition missing_pulse (pa : t) : bool := negb (is_observed (pulse pa)).
+Definition missing_grimace (pa : t) : bool := negb (is_observed (grimace pa)).
+Definition missing_activity (pa : t) : bool := negb (is_observed (activity pa)).
+Definition missing_respiration (pa : t) : bool := negb (is_observed (respiration pa)).
+
+Definition missing_components (pa : t) : list MnemonicComponent :=
+  (if missing_appearance pa then [MAppearance] else []) ++
+  (if missing_pulse pa then [MPulse] else []) ++
+  (if missing_grimace pa then [MGrimace] else []) ++
+  (if missing_activity pa then [MActivity] else []) ++
+  (if missing_respiration pa then [MRespiration] else []).
+
+Theorem missing_count_correct : forall pa,
+  length (missing_components pa) = 5 - observed_count pa.
+Proof.
+  intros pa. unfold missing_components, observed_count.
+  destruct (appearance pa) as [|]; destruct (pulse pa) as [|];
+  destruct (grimace pa) as [|]; destruct (activity pa) as [|];
+  destruct (respiration pa) as [|]; simpl; reflexivity.
+Qed.
+
+Theorem complete_no_missing : forall pa,
+  is_complete pa = true -> missing_components pa = [].
+Proof.
+  intros pa H. unfold is_complete in H. apply Nat.eqb_eq in H.
+  pose proof (missing_count_correct pa) as Hlen.
+  rewrite H in Hlen. simpl in Hlen.
+  destruct (missing_components pa); [reflexivity | simpl in Hlen; lia].
+Qed.
+
+(** Create partial assessment with specific component unobserved *)
+Definition with_appearance_unobserved (a : Assessment.t) (b : ObservationBarrier) : t :=
+  mk (Unobserved b)
+     (Observed (Assessment.pulse a))
+     (Observed (Assessment.grimace a))
+     (Observed (Assessment.activity a))
+     (Observed (Assessment.respiration a)).
+
+Definition with_pulse_unobserved (a : Assessment.t) (b : ObservationBarrier) : t :=
+  mk (Observed (Assessment.appearance a))
+     (Unobserved b)
+     (Observed (Assessment.grimace a))
+     (Observed (Assessment.activity a))
+     (Observed (Assessment.respiration a)).
+
+Theorem with_appearance_unobserved_incomplete : forall a b,
+  is_complete (with_appearance_unobserved a b) = false.
+Proof. intros. reflexivity. Qed.
+
+Theorem with_pulse_unobserved_incomplete : forall a b,
+  is_complete (with_pulse_unobserved a b) = false.
+Proof. intros. reflexivity. Qed.
+
+(** Score interval for partial assessment *)
+Definition score_interval (pa : t) : Interval.t :=
+  Interval.make (score_minimum pa) (score_maximum pa) (score_min_le_max pa).
+
+Theorem actual_score_in_interval : forall pa a,
+  to_assessment pa = Some a ->
+  Interval.contains (score_interval pa) (Assessment.total_unbounded a).
+Proof.
+  intros pa a H.
+  pose proof (complete_score_exact pa a H) as [Hmin Hmax].
+  unfold Interval.contains, score_interval. simpl. lia.
+Qed.
+
+End PartialAssessment.
 
 (******************************************************************************)
 (*                                                                            *)
@@ -4684,14 +5149,26 @@ Qed.
 (*  PRETERM-ADJUSTED CLASSIFICATION                                           *)
 (*                                                                            *)
 (*  Preterm neonates have different baseline expectations for vitality signs. *)
-(*  This section provides adjusted classification that accounts for           *)
-(*  gestational age. [AAP2015] notes that APGAR may be affected by GA.        *)
+(*  [AAP2015] notes that APGAR may be affected by GA but does NOT endorse     *)
+(*  specific numeric adjustments.                                             *)
+(*                                                                            *)
+(*  IMPORTANT: The adjustment factors below (+1 for 28-31 weeks, +2 for <28   *)
+(*  weeks) are HEURISTICS for local practice consideration, NOT evidence-     *)
+(*  based guidelines from AAP, ACOG, or NRP. No official guideline prescribes *)
+(*  additive score adjustments based on gestational age. Clinical decisions   *)
+(*  should consider GA as contextual information rather than applying         *)
+(*  mechanical score modifications. This implementation is provided for       *)
+(*  institutions that wish to explore gestational-age-aware classification    *)
+(*  but should be validated against local outcomes data before clinical use.  *)
+(*                                                                            *)
 (******************************************************************************)
 
-(** Adjustment factor based on gestational age *)
+(** Adjustment factor based on gestational age.
+    WARNING: These values are heuristics, not from official clinical guidelines.
+    See module header for full disclaimer. *)
 Definition preterm_adjustment (ga_weeks : nat) : nat :=
-  if ga_weeks <? 28 then 2        (** Extreme preterm: +2 adjustment *)
-  else if ga_weeks <? 32 then 1   (** Very preterm: +1 adjustment *)
+  if ga_weeks <? 28 then 2        (** Extreme preterm: +2 heuristic *)
+  else if ga_weeks <? 32 then 1   (** Very preterm: +1 heuristic *)
   else 0.                         (** Moderate preterm or term: no adjustment *)
 
 (** Adjusted score for classification purposes *)
@@ -4852,6 +5329,74 @@ Proof.
   - rewrite Nat.min_l by lia. rewrite Nat.min_r by lia. lia.
   - rewrite Nat.min_r by lia. rewrite Nat.min_l by lia. lia.
   - rewrite Nat.min_r by lia. rewrite Nat.min_r by lia. lia.
+Qed.
+
+Theorem boundary_at_3 : of_score 3 <> of_score 4.
+Proof. discriminate. Qed.
+
+Theorem boundary_at_6 : of_score 6 <> of_score 7.
+Proof. discriminate. Qed.
+
+Theorem no_boundary_within_low : forall s1 s2,
+  s1 <= 3 -> s2 <= 3 -> of_score s1 = of_score s2.
+Proof.
+  intros s1 s2 H1 H2.
+  assert (of_score s1 = Low) by (apply of_score_low; lia).
+  assert (of_score s2 = Low) by (apply of_score_low; lia).
+  congruence.
+Qed.
+
+Theorem no_boundary_within_moderate : forall s1 s2,
+  4 <= s1 <= 6 -> 4 <= s2 <= 6 -> of_score s1 = of_score s2.
+Proof.
+  intros s1 s2 H1 H2.
+  assert (of_score s1 = ModeratelyAbnormal) by (apply of_score_moderate; lia).
+  assert (of_score s2 = ModeratelyAbnormal) by (apply of_score_moderate; lia).
+  congruence.
+Qed.
+
+Theorem no_boundary_within_reassuring : forall s1 s2,
+  7 <= s1 -> 7 <= s2 -> s1 <= 10 -> s2 <= 10 -> of_score s1 = of_score s2.
+Proof.
+  intros s1 s2 H1 H2 H3 H4.
+  assert (of_score s1 = Reassuring) by (apply of_score_reassuring; lia).
+  assert (of_score s2 = Reassuring) by (apply of_score_reassuring; lia).
+  congruence.
+Qed.
+
+Theorem boundary_iff_crosses_threshold : forall s,
+  s <= 9 ->
+  (of_score s <> of_score (S s) <-> s = 3 \/ s = 6).
+Proof.
+  intros s Hs. split.
+  - intros Hne.
+    destruct (Nat.le_gt_cases s 2) as [Hle2|Hgt2].
+    + exfalso. apply Hne. apply no_boundary_within_low; lia.
+    + destruct (Nat.le_gt_cases s 3) as [Hle3|Hgt3].
+      * left. lia.
+      * destruct (Nat.le_gt_cases s 5) as [Hle5|Hgt5].
+        { exfalso. apply Hne. apply no_boundary_within_moderate; lia. }
+        { destruct (Nat.le_gt_cases s 6) as [Hle6|Hgt6].
+          - right. lia.
+          - exfalso. apply Hne. apply no_boundary_within_reassuring; lia. }
+  - intros [H|H]; subst; discriminate.
+Qed.
+
+Theorem boundaries_exactly_3_and_6 : forall s,
+  s <= 9 ->
+  of_score s <> of_score (S s) <-> (s = 3 \/ s = 6).
+Proof. exact boundary_iff_crosses_threshold. Qed.
+
+Theorem adjacent_same_class_iff : forall s,
+  s <= 9 ->
+  of_score s = of_score (S s) <-> (s <> 3 /\ s <> 6).
+Proof.
+  intros s Hs. split.
+  - intros Heq. split; intro Hcontra; subst; discriminate.
+  - intros [Hn3 Hn6].
+    destruct (eq_dec (of_score s) (of_score (S s))) as [Heq|Hne]; [exact Heq|].
+    exfalso. apply boundary_iff_crosses_threshold in Hne; [|exact Hs].
+    destruct Hne; contradiction.
 Qed.
 
 End Classification.
@@ -5451,6 +5996,118 @@ Proof.
   - simpl. unfold golden_minute_sec, ppv_reassess_sec. lia.
 Qed.
 
+(** De-escalation Criteria per NRP 2021
+    De-escalation from a higher level of intervention to a lower level
+    requires demonstrated clinical improvement over a minimum observation period. *)
+
+(** Minimum stable period before de-escalation (in seconds) *)
+Definition deescalation_stable_period : nat := 30.
+
+(** Heart rate threshold for de-escalation consideration *)
+Definition hr_deescalation_threshold : nat := 100.
+
+(** SpO2 improvement required for de-escalation (percentage points) *)
+Definition spo2_improvement_threshold : nat := 5.
+
+(** De-escalation is only valid between adjacent intervention levels *)
+Definition is_adjacent_deescalation (from_int to_int : t) : bool :=
+  match from_int, to_int with
+  | FullResuscitation, PositivePressureVentilation => true
+  | PositivePressureVentilation, StimulationOxygen => true
+  | StimulationOxygen, RoutineCare => true
+  | _, _ => false
+  end.
+
+(** Clinical criteria for de-escalation *)
+Record DeescalationCriteria : Type := mkDeescCriteria {
+  current_intervention : t;
+  hr_above_100 : bool;
+  spo2_improving : bool;
+  spontaneous_respirations : bool;
+  stable_duration_sec : nat
+}.
+
+Definition meets_deescalation_criteria (dc : DeescalationCriteria) : bool :=
+  hr_above_100 dc &&
+  spo2_improving dc &&
+  (deescalation_stable_period <=? stable_duration_sec dc).
+
+Definition can_deescalate_to (dc : DeescalationCriteria) (target : t) : bool :=
+  meets_deescalation_criteria dc &&
+  is_adjacent_deescalation (current_intervention dc) target.
+
+(** From full resuscitation, must have spontaneous respirations to de-escalate *)
+Definition can_deescalate_from_full_resus (dc : DeescalationCriteria) : bool :=
+  current_intervention dc =? to_nat FullResuscitation &&
+  meets_deescalation_criteria dc &&
+  spontaneous_respirations dc.
+
+Theorem deescalation_requires_stability : forall dc target,
+  can_deescalate_to dc target = true ->
+  stable_duration_sec dc >= deescalation_stable_period.
+Proof.
+  intros dc target H. unfold can_deescalate_to in H.
+  apply andb_prop in H. destruct H as [H _].
+  unfold meets_deescalation_criteria in H.
+  apply andb_prop in H. destruct H as [H1 H2].
+  apply andb_prop in H2. destruct H2 as [_ H2].
+  apply Nat.leb_le in H2. exact H2.
+Qed.
+
+Theorem deescalation_requires_hr : forall dc target,
+  can_deescalate_to dc target = true ->
+  hr_above_100 dc = true.
+Proof.
+  intros dc target H. unfold can_deescalate_to in H.
+  apply andb_prop in H. destruct H as [H _].
+  unfold meets_deescalation_criteria in H.
+  apply andb_prop in H. destruct H as [H _]. exact H.
+Qed.
+
+Theorem full_resus_deescalation_requires_breathing : forall dc,
+  can_deescalate_from_full_resus dc = true ->
+  spontaneous_respirations dc = true.
+Proof.
+  intros dc H. unfold can_deescalate_from_full_resus in H.
+  apply andb_prop in H. destruct H as [_ H].
+  apply andb_prop in H. destruct H as [_ H]. exact H.
+Qed.
+
+Theorem no_skip_deescalation : forall dc,
+  can_deescalate_to dc RoutineCare = true ->
+  current_intervention dc = StimulationOxygen.
+Proof.
+  intros dc H. unfold can_deescalate_to in H.
+  apply andb_prop in H. destruct H as [_ H].
+  unfold is_adjacent_deescalation in H.
+  destruct (current_intervention dc); try discriminate.
+  reflexivity.
+Qed.
+
+(** Intervention level after successful de-escalation *)
+Definition deescalate (i : t) : option t :=
+  match i with
+  | FullResuscitation => Some PositivePressureVentilation
+  | PositivePressureVentilation => Some StimulationOxygen
+  | StimulationOxygen => Some RoutineCare
+  | RoutineCare => None
+  end.
+
+Theorem deescalate_decreases_level : forall i i',
+  deescalate i = Some i' -> le i' i.
+Proof.
+  intros [] i' H; simpl in H; inversion H; subst; unfold le; simpl; lia.
+Qed.
+
+Theorem routine_care_terminal : deescalate RoutineCare = None.
+Proof. reflexivity. Qed.
+
+Theorem deescalate_adjacent : forall i i',
+  deescalate i = Some i' -> is_adjacent_deescalation i i' = true.
+Proof.
+  intros [] i' H; simpl in H; inversion H; reflexivity.
+Qed.
+
 End Intervention.
 
 (******************************************************************************)
@@ -5536,6 +6193,95 @@ Definition tolerance_to_secs (tol : ToleranceLevel) : nat :=
 
 Definition is_within_tolerance (ts : Timestamp) (t : Time) (tol : ToleranceLevel) : bool :=
   is_within_window ts t (tolerance_to_secs tol).
+
+(** Observation Duration Semantics
+    APGAR assessment is not instantaneous - each component requires observation time:
+    - Heart rate: 6 seconds counted × 10, or 15 seconds × 4 (standard)
+    - Respirations: At least one respiratory cycle observed
+    - Color/Activity/Grimace: Visual inspection (typically 5-10 seconds each)
+    Total observation window is approximately 30 seconds for a complete assessment. *)
+
+Definition observation_duration_secs : nat := 30.
+Definition hr_count_duration_secs : nat := 6.
+Definition hr_multiplier : nat := 10.
+
+(** Observation window record *)
+Record ObservationWindow : Type := mkObsWindow {
+  obs_start_sec : nat;
+  obs_end_sec : nat;
+  obs_valid : obs_start_sec <= obs_end_sec
+}.
+
+Definition obs_duration (ow : ObservationWindow) : nat :=
+  obs_end_sec ow - obs_start_sec ow.
+
+Definition obs_is_complete (ow : ObservationWindow) : bool :=
+  observation_duration_secs <=? obs_duration ow.
+
+Definition obs_midpoint (ow : ObservationWindow) : nat :=
+  obs_start_sec ow + (obs_duration ow / 2).
+
+(** Assessment with observation window metadata *)
+Record TimedObservation : Type := mkTimedObs {
+  tobs_window : ObservationWindow;
+  tobs_standard_time : Time;
+  tobs_assessment : Assessment.t
+}.
+
+Definition tobs_start (to : TimedObservation) : nat :=
+  obs_start_sec (tobs_window to).
+
+Definition tobs_end (to : TimedObservation) : nat :=
+  obs_end_sec (tobs_window to).
+
+Definition tobs_duration (to : TimedObservation) : nat :=
+  obs_duration (tobs_window to).
+
+(** Observation was complete (at least 30 seconds) *)
+Definition tobs_complete (to : TimedObservation) : bool :=
+  obs_is_complete (tobs_window to).
+
+(** Observation centered on standard time (within tolerance) *)
+Definition tobs_centered_on_time (to : TimedObservation) : bool :=
+  let midpoint := obs_midpoint (tobs_window to) in
+  let target := to_seconds (tobs_standard_time to) in
+  (target - clinical_tolerance_secs <=? midpoint) &&
+  (midpoint <=? target + clinical_tolerance_secs).
+
+(** Valid timed observation: complete and properly timed *)
+Definition tobs_valid (to : TimedObservation) : bool :=
+  tobs_complete to && tobs_centered_on_time to.
+
+Theorem complete_obs_has_minimum_duration : forall to,
+  tobs_complete to = true -> tobs_duration to >= observation_duration_secs.
+Proof.
+  intros to H. unfold tobs_complete, tobs_duration, obs_is_complete, obs_duration in *.
+  apply Nat.leb_le in H. exact H.
+Qed.
+
+(** Heart rate counting: count for 6 seconds, multiply by 10 *)
+Definition counted_hr_to_actual (counted_beats : nat) : nat :=
+  counted_beats * hr_multiplier.
+
+Definition actual_hr_to_counted (actual_bpm : nat) : nat :=
+  actual_bpm / hr_multiplier.
+
+Theorem hr_count_round_trip_approx : forall actual_bpm,
+  counted_hr_to_actual (actual_hr_to_counted actual_bpm) <= actual_bpm.
+Proof.
+  intros actual_bpm. unfold counted_hr_to_actual, actual_hr_to_counted.
+  apply Nat.mul_div_le. lia.
+Qed.
+
+(** Standard HR ranges by counting method *)
+Definition hr_absent_count : nat := 0.
+Definition hr_below_100_max_count : nat := 9.
+Definition hr_at_or_above_100_min_count : nat := 10.
+
+Theorem hr_count_thresholds_correct :
+  counted_hr_to_actual hr_below_100_max_count < 100 /\
+  counted_hr_to_actual hr_at_or_above_100_min_count = 100.
+Proof. split; reflexivity. Qed.
 
 (** Clinical tolerance is standard *)
 Lemma clinical_tolerance_is_standard : forall ts t,
@@ -6996,6 +7742,133 @@ Proof. intros []; simpl; auto. Qed.
 
 Lemma ett_size_all_nodup : NoDup ett_size_all.
 Proof. repeat constructor; simpl; intuition discriminate. Qed.
+
+(** ETT Confirmation Methods per NRP 2021
+    Proper ETT placement must be confirmed by multiple methods:
+    1. Colorimetric CO2 detector (ETCO2) - gold standard, color change indicates tracheal placement
+    2. Chest rise observation - symmetric bilateral chest wall movement
+    3. Auscultation - equal breath sounds bilaterally, absent over stomach
+    4. Mist in ETT - condensation during exhalation
+    5. SpO2 improvement - oxygen saturation should improve after correct placement
+    At least 2 confirmation methods should be positive before considering placement confirmed. *)
+
+Inductive ConfirmationMethod : Type :=
+  | CO2Detector : ConfirmationMethod
+  | ChestRiseObservation : ConfirmationMethod
+  | Auscultation : ConfirmationMethod
+  | ETTMist : ConfirmationMethod
+  | SpO2Improvement : ConfirmationMethod
+  | Laryngoscopy : ConfirmationMethod.
+
+Definition confirmation_method_eq_dec : forall c1 c2 : ConfirmationMethod,
+  {c1 = c2} + {c1 <> c2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition confirmation_method_all : list ConfirmationMethod :=
+  [CO2Detector; ChestRiseObservation; Auscultation; ETTMist; SpO2Improvement; Laryngoscopy].
+
+Lemma confirmation_method_all_complete : forall c : ConfirmationMethod,
+  In c confirmation_method_all.
+Proof. intros []; simpl; auto 10. Qed.
+
+Definition is_primary_confirmation (m : ConfirmationMethod) : bool :=
+  match m with
+  | CO2Detector => true
+  | ChestRiseObservation => true
+  | _ => false
+  end.
+
+Definition is_secondary_confirmation (m : ConfirmationMethod) : bool :=
+  negb (is_primary_confirmation m).
+
+(** CO2 detector color states *)
+Inductive CO2DetectorResult : Type :=
+  | CO2Positive : CO2DetectorResult
+  | CO2Negative : CO2DetectorResult
+  | CO2Indeterminate : CO2DetectorResult.
+
+Definition co2_result_eq_dec : forall r1 r2 : CO2DetectorResult, {r1 = r2} + {r1 <> r2}.
+Proof. intros [] []; (left; reflexivity) || (right; discriminate). Defined.
+
+Definition co2_indicates_tracheal (r : CO2DetectorResult) : bool :=
+  match r with CO2Positive => true | _ => false end.
+
+(** ETT Confirmation Record *)
+Record ETTConfirmation : Type := mkETTConfirmation {
+  co2_result : CO2DetectorResult;
+  chest_rise_symmetric : bool;
+  breath_sounds_equal : bool;
+  stomach_sounds_absent : bool;
+  ett_mist_present : bool;
+  spo2_improved : bool
+}.
+
+Definition confirmation_score (ec : ETTConfirmation) : nat :=
+  (if co2_indicates_tracheal (co2_result ec) then 2 else 0) +
+  (if chest_rise_symmetric ec then 1 else 0) +
+  (if breath_sounds_equal ec && stomach_sounds_absent ec then 1 else 0) +
+  (if ett_mist_present ec then 1 else 0) +
+  (if spo2_improved ec then 1 else 0).
+
+Definition min_confirmation_score : nat := 3.
+
+Definition is_placement_confirmed (ec : ETTConfirmation) : bool :=
+  min_confirmation_score <=? confirmation_score ec.
+
+Definition has_primary_confirmation (ec : ETTConfirmation) : bool :=
+  co2_indicates_tracheal (co2_result ec) || chest_rise_symmetric ec.
+
+(** Valid confirmation requires at least one primary method plus overall score *)
+Definition is_valid_confirmation (ec : ETTConfirmation) : bool :=
+  has_primary_confirmation ec && is_placement_confirmed ec.
+
+Theorem co2_positive_adds_2_points : forall ec,
+  co2_result ec = CO2Positive -> confirmation_score ec >= 2.
+Proof.
+  intros ec H. unfold confirmation_score.
+  rewrite H. simpl. lia.
+Qed.
+
+Theorem negative_co2_requires_other_methods : forall ec,
+  co2_result ec = CO2Negative ->
+  is_valid_confirmation ec = true ->
+  chest_rise_symmetric ec = true.
+Proof.
+  intros ec Hco2 Hvalid.
+  unfold is_valid_confirmation, has_primary_confirmation in Hvalid.
+  apply andb_prop in Hvalid. destruct Hvalid as [Hprimary _].
+  unfold co2_indicates_tracheal in Hprimary.
+  rewrite Hco2 in Hprimary. simpl in Hprimary.
+  destruct (chest_rise_symmetric ec); [reflexivity | discriminate].
+Qed.
+
+Theorem valid_confirmation_has_minimum_evidence : forall ec,
+  is_valid_confirmation ec = true ->
+  confirmation_score ec >= min_confirmation_score.
+Proof.
+  intros ec H. unfold is_valid_confirmation in H.
+  apply andb_prop in H. destruct H as [_ H].
+  unfold is_placement_confirmed in H.
+  apply Nat.leb_le in H. exact H.
+Qed.
+
+(** Potential esophageal intubation indicators *)
+Definition suggests_esophageal (ec : ETTConfirmation) : bool :=
+  negb (co2_indicates_tracheal (co2_result ec)) &&
+  negb (chest_rise_symmetric ec) &&
+  negb (stomach_sounds_absent ec).
+
+Theorem esophageal_not_confirmed : forall ec,
+  suggests_esophageal ec = true ->
+  is_valid_confirmation ec = false.
+Proof.
+  intros ec H. unfold suggests_esophageal in H.
+  apply andb_prop in H. destruct H as [H1 H2].
+  apply andb_prop in H1. destruct H1 as [H1a H1b].
+  unfold is_valid_confirmation, has_primary_confirmation.
+  apply negb_true_iff in H1a. apply negb_true_iff in H1b.
+  rewrite H1a, H1b. simpl. reflexivity.
+Qed.
 
 (** Volume expansion agents for resuscitation *)
 Inductive VolumeAgent : Type :=
