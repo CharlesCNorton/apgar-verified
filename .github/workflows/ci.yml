@@ -9,7 +9,11 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
+      # The repository sits beside the opam switch that setup-ocaml creates
+      # in the workspace root, so that -Q . maps the sources alone.
       - uses: actions/checkout@v4
+        with:
+          path: apgar-verified
 
       - name: Set up OCaml
         uses: ocaml/setup-ocaml@v3
@@ -20,4 +24,5 @@ jobs:
         run: opam install --yes rocq-prover.9.0.0
 
       - name: Compile, check and test
+        working-directory: apgar-verified
         run: opam exec -- make ci
