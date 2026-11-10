@@ -1,0 +1,19 @@
+# Rocq build products
+*.vo
+*.vok
+*.vos
+*.glob
+.*.aux
+.lia.cache
+.nia.cache
+
+# Extraction and OCaml build products
+apgar.ml
+apgar.mli
+*.cmi
+*.cmo
+*.byte
+
+# Logs written by the Makefile
+build.log
+rocqchk.log
